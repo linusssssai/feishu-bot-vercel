@@ -45,12 +45,32 @@ function parsePostContent(content: string): { text: string; imageKeys: string[] 
   const result = { text: '', imageKeys: [] as string[] }
 
   try {
-    const postJson = JSON.parse(content)
-    const post = postJson.post || {}
+    const contentJson = JSON.parse(content)
+    console.log(`[Webhook] parsePostContent JSON keys: ${Object.keys(contentJson).join(', ')}`)
 
-    // 获取中文或英文内容
-    const langContent = post.zh_cn || post.en_us || Object.values(post)[0] as any
-    if (!langContent) return result
+    // 尝试多种可能的结构
+    let langContent: any = null
+
+    // 结构1: { post: { zh_cn: { content: [...] } } }
+    if (contentJson.post) {
+      const post = contentJson.post
+      langContent = post.zh_cn || post.en_us || post.ja_jp || Object.values(post)[0]
+    }
+    // 结构2: { zh_cn: { content: [...] } }
+    else if (contentJson.zh_cn || contentJson.en_us) {
+      langContent = contentJson.zh_cn || contentJson.en_us
+    }
+    // 结构3: { title: "", content: [...] } 直接是内容
+    else if (contentJson.content && Array.isArray(contentJson.content)) {
+      langContent = contentJson
+    }
+
+    if (!langContent) {
+      console.log(`[Webhook] 无法识别post结构`)
+      return result
+    }
+
+    console.log(`[Webhook] langContent keys: ${Object.keys(langContent).join(', ')}`)
 
     // 提取标题
     if (langContent.title) {
@@ -59,14 +79,24 @@ function parsePostContent(content: string): { text: string; imageKeys: string[] 
 
     // 遍历所有段落
     const paragraphs = langContent.content || []
+    console.log(`[Webhook] 段落数: ${paragraphs.length}`)
+
     for (const paragraph of paragraphs) {
+      if (!Array.isArray(paragraph)) continue
+
       for (const element of paragraph) {
-        if (element.tag === 'text') {
-          result.text += element.text || ''
+        console.log(`[Webhook] 元素: ${JSON.stringify(element)}`)
+
+        if (element.tag === 'text' && element.text) {
+          result.text += element.text
         } else if (element.tag === 'img' && element.image_key) {
           result.imageKeys.push(element.image_key)
-        } else if (element.tag === 'a') {
-          result.text += element.text || ''
+        } else if (element.tag === 'a' && element.text) {
+          result.text += element.text
+        }
+        // 也检查 media 类型（某些版本可能用这个）
+        else if (element.tag === 'media' && element.image_key) {
+          result.imageKeys.push(element.image_key)
         }
       }
       result.text += '\n'
@@ -141,6 +171,7 @@ export async function POST(request: NextRequest) {
         }
       } else if (msgType === 'post') {
         // 富文本消息（可包含多图+文字）
+        console.log(`[Webhook] 原始post内容: ${message.content}`)
         const parsed = parsePostContent(message.content || '{}')
         textContent = parsed.text
         imageKeys = parsed.imageKeys
