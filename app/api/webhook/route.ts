@@ -20,7 +20,8 @@ async function processMessageAsync(
   messageId: string,
   msgType: string,
   textContent: string,
-  imageKeys: string[]  // 改为数组，支持多图
+  imageKeys: string[],  // 改为数组，支持多图
+  chatId: string        // 添加chatId用于会话上下文
 ) {
   // 使用自定义域名（中国可访问）
   const baseUrl = 'https://feishu-hook.cc-agent.net'
@@ -30,7 +31,7 @@ async function processMessageAsync(
     await fetch(`${baseUrl}/api/process`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messageId, msgType, textContent, imageKeys }),
+      body: JSON.stringify({ messageId, msgType, textContent, imageKeys, chatId }),
     })
   } catch (error) {
     console.error('[Webhook] 触发异步处理失败:', error)
@@ -133,6 +134,7 @@ export async function POST(request: NextRequest) {
 
       const messageId = message.message_id || ''
       const msgType = message.message_type || ''
+      const chatId = message.chat_id || ''
 
       // 防止重复处理
       if (processedMessages.has(messageId)) {
@@ -178,10 +180,10 @@ export async function POST(request: NextRequest) {
         console.log(`[Webhook] 富文本消息 - 文字: ${textContent.substring(0, 50)}... 图片数: ${imageKeys.length}`)
       }
 
-      console.log(`[Webhook] 收到消息 - ${Date.now() - startTime}ms - ${messageId} - 类型: ${msgType}`)
+      console.log(`[Webhook] 收到消息 - ${Date.now() - startTime}ms - ${messageId} - 类型: ${msgType} - 会话: ${chatId}`)
 
       // 关键：使用waitUntil确保异步处理完成，但不阻塞响应
-      waitUntil(processMessageAsync(messageId, msgType, textContent, imageKeys))
+      waitUntil(processMessageAsync(messageId, msgType, textContent, imageKeys, chatId))
     }
 
     // 立即返回200！

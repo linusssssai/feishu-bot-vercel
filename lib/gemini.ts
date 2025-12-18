@@ -233,3 +233,107 @@ export async function generateImageWithReferences(
 
   return response
 }
+
+// ============ 多维表格操作分析 ============
+
+export interface BitableOperation {
+  type: 'query' | 'create' | 'update' | 'delete' | 'create_table' | 'none'
+  tableName?: string
+  filter?: string
+  fields?: Record<string, any>
+  recordId?: string
+  tableFields?: Array<{ name: string; type: string }>
+  description?: string
+}
+
+/**
+ * 分析用户的多维表格操作意图
+ */
+export async function analyzeBitableIntent(
+  userMessage: string,
+  tableFields?: any[]
+): Promise<BitableOperation> {
+  const genAI = getGeminiClient()
+  const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' })
+
+  const fieldInfo = tableFields
+    ? `\n当前表格字段: ${JSON.stringify(tableFields.map(f => ({ name: f.field_name, type: f.type })))}`
+    : ''
+
+  const prompt = `分析用户对多维表格的操作意图，返回JSON格式。
+
+用户消息: "${userMessage}"
+${fieldInfo}
+
+请分析用户想要执行的操作，返回以下JSON格式（只返回JSON，不要其他内容）：
+
+{
+  "type": "query|create|update|delete|create_table|none",
+  "description": "操作描述",
+  "filter": "查询条件（如果是query）",
+  "fields": {"字段名": "值"},  // 如果是create或update
+  "recordId": "记录ID",  // 如果是update或delete且用户指定了
+  "tableName": "表格名称",  // 如果是create_table
+  "tableFields": [{"name": "字段名", "type": "text|number|date|checkbox|single_select|multi_select"}]  // 如果是create_table
+}
+
+操作类型说明:
+- query: 查询/搜索/查看记录
+- create: 添加/新增/插入记录
+- update: 修改/更新/编辑记录
+- delete: 删除/移除记录
+- create_table: 创建新表格/新数据表
+- none: 不是多维表格操作
+
+示例:
+- "查询所有订单" -> {"type": "query", "description": "查询所有记录"}
+- "添加一条记录，姓名张三，年龄25" -> {"type": "create", "fields": {"姓名": "张三", "年龄": 25}}
+- "删除第一条记录" -> {"type": "delete", "description": "删除第一条记录"}
+- "创建一个员工表，包含姓名、部门、入职日期" -> {"type": "create_table", "tableName": "员工表", "tableFields": [{"name": "姓名", "type": "text"}, {"name": "部门", "type": "single_select"}, {"name": "入职日期", "type": "date"}]}
+- "今天天气怎么样" -> {"type": "none"}`
+
+  try {
+    const result = await model.generateContent(prompt)
+    const response = await result.response
+    const text = response.text().trim()
+
+    // 提取JSON
+    const jsonMatch = text.match(/\{[\s\S]*\}/)
+    if (jsonMatch) {
+      const operation = JSON.parse(jsonMatch[0]) as BitableOperation
+      console.log(`[Gemini] Bitable意图分析: ${operation.type}`)
+      return operation
+    }
+  } catch (e) {
+    console.error('[Gemini] Bitable意图分析失败:', e)
+  }
+
+  return { type: 'none' }
+}
+
+/**
+ * 生成多维表格操作结果的自然语言回复
+ */
+export async function generateBitableResponse(
+  operation: string,
+  result: any,
+  error?: string
+): Promise<string> {
+  const genAI = getGeminiClient()
+  const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' })
+
+  const prompt = `根据多维表格操作结果生成友好的中文回复。
+
+操作类型: ${operation}
+操作结果: ${JSON.stringify(result)}
+${error ? `错误信息: ${error}` : ''}
+
+请生成简洁友好的回复，告知用户操作结果。如果是查询结果，用表格或列表形式展示数据。`
+
+  try {
+    const response = await model.generateContent(prompt)
+    return response.response.text()
+  } catch (e) {
+    return error || '操作完成'
+  }
+}
