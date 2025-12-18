@@ -1,8 +1,11 @@
 {
-  "regions": ["hkg1"],
+  "regions": ["sfo1"],
   "functions": {
     "app/api/webhook/route.ts": {
       "maxDuration": 30
+    },
+    "app/api/process/route.ts": {
+      "maxDuration": 60
     }
   }
 }
