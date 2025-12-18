@@ -83,3 +83,4 @@ export async function analyzeImage(
 
   return await chatWithImage(prompt, imageData)
 }
+// rebuild Fri Dec 19 00:01:15 CST 2025
