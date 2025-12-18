@@ -1,11 +1,9 @@
 /**
  * 飞书事件订阅 Webhook 处理
- * POST /api/webhook
+ * 核心原则：先在 10-50ms 内返回 200，再异步处理
  */
 
 import { NextRequest, NextResponse } from 'next/server'
-import { replyMessage, getImageResource } from '@/lib/feishu'
-import { generateAssistantReply, analyzeImage } from '@/lib/gemini'
 
 // 使用Edge Runtime加速冷启动
 export const runtime = 'edge'
@@ -13,36 +11,55 @@ export const runtime = 'edge'
 // 已处理的消息ID缓存（防止重复处理）
 const processedMessages = new Set<string>()
 
+// 异步处理消息（不阻塞响应）
+async function processMessageAsync(
+  messageId: string,
+  msgType: string,
+  textContent: string,
+  imageKey: string
+) {
+  const baseUrl = process.env.VERCEL_URL
+    ? `https://${process.env.VERCEL_URL}`
+    : 'https://feishu-bot-vercel-beta.vercel.app'
+
+  try {
+    // 调用异步处理API
+    await fetch(`${baseUrl}/api/process`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messageId, msgType, textContent, imageKey }),
+    })
+  } catch (error) {
+    console.error('[Webhook] 触发异步处理失败:', error)
+  }
+}
+
 export async function POST(request: NextRequest) {
+  const startTime = Date.now()
+
   try {
     const data = await request.json()
 
-    console.log('[Webhook] 收到事件:', JSON.stringify(data, null, 2))
-
-    // 1. URL验证（首次配置时飞书会发送challenge）
+    // 1. URL验证（首次配置时飞书会发送challenge）- 必须最快返回
     if (data.challenge) {
-      console.log('[Webhook] URL验证 - 返回challenge')
+      console.log(`[Webhook] URL验证 - ${Date.now() - startTime}ms`)
       return NextResponse.json({ challenge: data.challenge })
     }
 
     // 2. 获取事件类型
     const header = data.header || {}
     const eventType = header.event_type || ''
-    const eventId = header.event_id || ''
 
     // 3. 处理消息接收事件
     if (eventType === 'im.message.receive_v1') {
       const event = data.event || {}
       const message = event.message || {}
-      const sender = event.sender || {}
 
       const messageId = message.message_id || ''
       const msgType = message.message_type || ''
-      const chatType = message.chat_type || '' // p2p=单聊, group=群聊
 
       // 防止重复处理
       if (processedMessages.has(messageId)) {
-        console.log('[Webhook] 消息已处理，跳过:', messageId)
         return NextResponse.json({ code: 0 })
       }
       processedMessages.add(messageId)
@@ -61,7 +78,6 @@ export async function POST(request: NextRequest) {
         try {
           const contentJson = JSON.parse(message.content || '{}')
           textContent = contentJson.text || ''
-          // 去除@机器人的内容
           textContent = textContent.replace(/@_user_\d+/g, '').trim()
         } catch {
           textContent = message.content || ''
@@ -75,49 +91,19 @@ export async function POST(request: NextRequest) {
         }
       }
 
-      console.log('[Webhook] 消息详情:', {
-        messageId,
-        msgType,
-        chatType,
-        textContent,
-        imageKey,
-        senderId: sender.sender_id?.open_id,
-      })
+      console.log(`[Webhook] 收到消息 - ${Date.now() - startTime}ms - ${messageId}`)
 
-      // 处理消息并回复
-      let replyText = ''
-
-      try {
-        if (msgType === 'text' && textContent) {
-          // 纯文字消息 - 调用Gemini生成回复
-          replyText = await generateAssistantReply(textContent)
-        } else if (msgType === 'image' && imageKey) {
-          // 图片消息 - 下载图片并分析
-          const imageData = await getImageResource(messageId, imageKey)
-          if (imageData) {
-            replyText = await analyzeImage(imageData)
-          } else {
-            replyText = '抱歉，无法获取图片内容。'
-          }
-        } else {
-          replyText = `收到你的${msgType}消息，目前仅支持文字和图片处理。`
-        }
-      } catch (error) {
-        console.error('[Webhook] AI处理错误:', error)
-        replyText = '抱歉，处理消息时出现错误，请稍后再试。'
-      }
-
-      // 发送回复
-      if (replyText) {
-        await replyMessage(messageId, replyText)
-        console.log('[Webhook] 回复已发送')
-      }
+      // 关键：先返回200，触发异步处理（不等待）
+      processMessageAsync(messageId, msgType, textContent, imageKey)
     }
 
+    // 立即返回200！
+    console.log(`[Webhook] 返回200 - ${Date.now() - startTime}ms`)
     return NextResponse.json({ code: 0, msg: 'success' })
+
   } catch (error) {
-    console.error('[Webhook] 处理错误:', error)
-    return NextResponse.json({ code: -1, msg: 'error' }, { status: 500 })
+    console.error('[Webhook] 错误:', error)
+    return NextResponse.json({ code: 0 }) // 即使出错也返回200，避免飞书重试
   }
 }
 
