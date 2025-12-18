@@ -189,3 +189,94 @@ export async function updateBitableRecord(
   const data = await response.json()
   return data.code === 0
 }
+
+// ============ 图片消息功能 ============
+
+/**
+ * 上传图片到飞书
+ * @param imageBuffer - 图片数据 (Buffer)
+ * @returns image_key 或 null
+ */
+export async function uploadImage(imageBuffer: Buffer): Promise<string | null> {
+  const token = await getTenantAccessToken()
+
+  // 创建 FormData - 将 Buffer 转为 Uint8Array 以兼容 Blob
+  const formData = new FormData()
+  formData.append('image_type', 'message')
+  const uint8Array = new Uint8Array(imageBuffer)
+  formData.append('image', new Blob([uint8Array], { type: 'image/png' }), 'generated.png')
+
+  const response = await fetch(`${BASE_URL}/im/v1/images`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+    },
+    body: formData,
+  })
+
+  const data = await response.json()
+
+  if (data.code === 0) {
+    console.log(`[Feishu] 图片上传成功: ${data.data?.image_key}`)
+    return data.data?.image_key || null
+  }
+
+  console.error('[Feishu] 上传图片失败:', data)
+  return null
+}
+
+/**
+ * 回复图片消息
+ */
+export async function replyImageMessage(messageId: string, imageKey: string): Promise<boolean> {
+  const token = await getTenantAccessToken()
+
+  const response = await fetch(`${BASE_URL}/im/v1/messages/${messageId}/reply`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      msg_type: 'image',
+      content: JSON.stringify({ image_key: imageKey }),
+    }),
+  })
+
+  const data = await response.json()
+
+  if (data.code === 0) {
+    console.log('[Feishu] 图片消息发送成功')
+    return true
+  }
+
+  console.error('[Feishu] 图片消息发送失败:', data)
+  return false
+}
+
+/**
+ * 发送图片消息到会话
+ */
+export async function sendImageMessage(
+  receiveId: string,
+  imageKey: string,
+  receiveIdType: 'open_id' | 'chat_id' = 'chat_id'
+): Promise<boolean> {
+  const token = await getTenantAccessToken()
+
+  const response = await fetch(`${BASE_URL}/im/v1/messages?receive_id_type=${receiveIdType}`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      receive_id: receiveId,
+      msg_type: 'image',
+      content: JSON.stringify({ image_key: imageKey }),
+    }),
+  })
+
+  const data = await response.json()
+  return data.code === 0
+}
