@@ -4,9 +4,13 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server'
+import { waitUntil } from '@vercel/functions'
+import { replyMessage } from '@/lib/feishu'
+import { generateAssistantReply } from '@/lib/gemini'
 
-// 使用Edge Runtime加速冷启动
-export const runtime = 'edge'
+// 改用Node.js Runtime（支持后台执行）
+export const runtime = 'nodejs'
+export const maxDuration = 30
 
 // 已处理的消息ID缓存（防止重复处理）
 const processedMessages = new Set<string>()
@@ -18,9 +22,8 @@ async function processMessageAsync(
   textContent: string,
   imageKey: string
 ) {
-  const baseUrl = process.env.VERCEL_URL
-    ? `https://${process.env.VERCEL_URL}`
-    : 'https://feishu-bot-vercel-beta.vercel.app'
+  // 使用自定义域名（中国可访问）
+  const baseUrl = 'https://feishu-hook.cc-agent.net'
 
   try {
     // 调用异步处理API
@@ -93,8 +96,8 @@ export async function POST(request: NextRequest) {
 
       console.log(`[Webhook] 收到消息 - ${Date.now() - startTime}ms - ${messageId}`)
 
-      // 关键：先返回200，触发异步处理（不等待）
-      processMessageAsync(messageId, msgType, textContent, imageKey)
+      // 关键：使用waitUntil确保异步处理完成，但不阻塞响应
+      waitUntil(processMessageAsync(messageId, msgType, textContent, imageKey))
     }
 
     // 立即返回200！
