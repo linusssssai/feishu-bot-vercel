@@ -7,6 +7,9 @@ import { NextRequest, NextResponse } from 'next/server'
 import { replyMessage, getImageResource } from '@/lib/feishu'
 import { generateAssistantReply, analyzeImage } from '@/lib/gemini'
 
+// 使用Edge Runtime加速冷启动
+export const runtime = 'edge'
+
 // 已处理的消息ID缓存（防止重复处理）
 const processedMessages = new Set<string>()
 
