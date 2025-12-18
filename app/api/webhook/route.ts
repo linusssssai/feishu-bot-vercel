@@ -20,7 +20,7 @@ async function processMessageAsync(
   messageId: string,
   msgType: string,
   textContent: string,
-  imageKey: string
+  imageKeys: string[]  // 改为数组，支持多图
 ) {
   // 使用自定义域名（中国可访问）
   const baseUrl = 'https://feishu-hook.cc-agent.net'
@@ -30,11 +30,54 @@ async function processMessageAsync(
     await fetch(`${baseUrl}/api/process`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messageId, msgType, textContent, imageKey }),
+      body: JSON.stringify({ messageId, msgType, textContent, imageKeys }),
     })
   } catch (error) {
     console.error('[Webhook] 触发异步处理失败:', error)
   }
+}
+
+/**
+ * 解析富文本消息（post类型）
+ * 提取所有文本和图片
+ */
+function parsePostContent(content: string): { text: string; imageKeys: string[] } {
+  const result = { text: '', imageKeys: [] as string[] }
+
+  try {
+    const postJson = JSON.parse(content)
+    const post = postJson.post || {}
+
+    // 获取中文或英文内容
+    const langContent = post.zh_cn || post.en_us || Object.values(post)[0] as any
+    if (!langContent) return result
+
+    // 提取标题
+    if (langContent.title) {
+      result.text += langContent.title + '\n'
+    }
+
+    // 遍历所有段落
+    const paragraphs = langContent.content || []
+    for (const paragraph of paragraphs) {
+      for (const element of paragraph) {
+        if (element.tag === 'text') {
+          result.text += element.text || ''
+        } else if (element.tag === 'img' && element.image_key) {
+          result.imageKeys.push(element.image_key)
+        } else if (element.tag === 'a') {
+          result.text += element.text || ''
+        }
+      }
+      result.text += '\n'
+    }
+
+    result.text = result.text.trim()
+  } catch (e) {
+    console.error('[Webhook] 解析post消息失败:', e)
+  }
+
+  return result
 }
 
 export async function POST(request: NextRequest) {
@@ -75,9 +118,10 @@ export async function POST(request: NextRequest) {
 
       // 解析消息内容
       let textContent = ''
-      let imageKey = ''
+      let imageKeys: string[] = []
 
       if (msgType === 'text') {
+        // 纯文本消息
         try {
           const contentJson = JSON.parse(message.content || '{}')
           textContent = contentJson.text || ''
@@ -86,18 +130,27 @@ export async function POST(request: NextRequest) {
           textContent = message.content || ''
         }
       } else if (msgType === 'image') {
+        // 单图消息
         try {
           const contentJson = JSON.parse(message.content || '{}')
-          imageKey = contentJson.image_key || ''
+          if (contentJson.image_key) {
+            imageKeys.push(contentJson.image_key)
+          }
         } catch {
           // ignore
         }
+      } else if (msgType === 'post') {
+        // 富文本消息（可包含多图+文字）
+        const parsed = parsePostContent(message.content || '{}')
+        textContent = parsed.text
+        imageKeys = parsed.imageKeys
+        console.log(`[Webhook] 富文本消息 - 文字: ${textContent.substring(0, 50)}... 图片数: ${imageKeys.length}`)
       }
 
-      console.log(`[Webhook] 收到消息 - ${Date.now() - startTime}ms - ${messageId}`)
+      console.log(`[Webhook] 收到消息 - ${Date.now() - startTime}ms - ${messageId} - 类型: ${msgType}`)
 
       // 关键：使用waitUntil确保异步处理完成，但不阻塞响应
-      waitUntil(processMessageAsync(messageId, msgType, textContent, imageKey))
+      waitUntil(processMessageAsync(messageId, msgType, textContent, imageKeys))
     }
 
     // 立即返回200！

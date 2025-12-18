@@ -160,3 +160,76 @@ export async function generateImage(prompt: string): Promise<{ text?: string; im
 
   return response
 }
+
+/**
+ * 多图+文字生成图片
+ * 支持最多14张参考图片 + 文字提示
+ * @param imageBuffers - 图片数据数组
+ * @param prompt - 用户提示词
+ * @returns { text?: string, imageBase64?: string }
+ */
+export async function generateImageWithReferences(
+  imageBuffers: ArrayBuffer[],
+  prompt: string
+): Promise<{ text?: string; imageBase64?: string }> {
+  console.log(`[Gemini] 多图生成 - 图片数: ${imageBuffers.length}, prompt: ${prompt.substring(0, 50)}...`)
+
+  const ai = getGenAIClient()
+
+  // 构建图片部分 (最多14张)
+  const imageParts = imageBuffers.slice(0, 14).map(buffer => ({
+    inlineData: {
+      data: Buffer.from(buffer).toString('base64'),
+      mimeType: 'image/png',
+    },
+  }))
+
+  // 构建提示词
+  const fullPrompt = `你是一个专业的AI助手，擅长分析图片并根据用户需求生成新图片。
+
+用户提供了 ${imageBuffers.length} 张参考图片。
+
+用户的需求: "${prompt}"
+
+请根据参考图片和用户需求:
+1. 如果用户需要生成新图片，请生成一张结合参考图片元素的高质量图片
+2. 同时提供简短的中文说明（2-3句话），描述生成的图片内容
+
+请生成图片和说明。`
+
+  // 调用API
+  const result = await ai.models.generateContent({
+    model: 'gemini-3-pro-image-preview',
+    contents: [{
+      role: 'user',
+      parts: [
+        { text: fullPrompt },
+        ...imageParts,
+      ],
+    }],
+    config: { responseModalities: ['TEXT', 'IMAGE'] },
+  })
+
+  const response: { text?: string; imageBase64?: string } = {}
+
+  // 解析响应
+  if (result.candidates && result.candidates[0] && result.candidates[0].content) {
+    const parts = result.candidates[0].content.parts || []
+    for (const part of parts) {
+      if ('text' in part && part.text) {
+        response.text = part.text
+      }
+      if ('inlineData' in part && part.inlineData && part.inlineData.data) {
+        response.imageBase64 = part.inlineData.data
+        const size = (part.inlineData.data.length / 1024).toFixed(2)
+        console.log(`[Gemini] 多图生成成功, 大小: ${size} KB`)
+      }
+    }
+  }
+
+  if (!response.imageBase64) {
+    console.log('[Gemini] 多图生成未产出图片')
+  }
+
+  return response
+}
