@@ -47,7 +47,7 @@ export async function POST(request: NextRequest) {
       // 限制缓存大小
       if (processedMessages.size > 1000) {
         const firstKey = processedMessages.values().next().value
-        processedMessages.delete(firstKey)
+        if (firstKey) processedMessages.delete(firstKey)
       }
 
       // 解析消息内容
