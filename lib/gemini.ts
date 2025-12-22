@@ -337,3 +337,32 @@ ${error ? `错误信息: ${error}` : ''}
     return error || '操作完成'
   }
 }
+
+// ============ Interactions API 集成 ============
+
+/**
+ * 带降级的 Bitable 意图分析
+ * 优先使用 Interactions API 的结构化输出，失败时回退到传统方法
+ *
+ * 这个函数结合了新旧两种方法的优势：
+ * - 新方法（Interactions API）：结构化输出，100% JSON 解析成功率
+ * - 旧方法（传统方法）：作为降级保障，确保服务可用性
+ */
+export async function analyzeBitableIntentWithFallback(
+  userMessage: string,
+  tableFields?: any[]
+): Promise<BitableOperation> {
+  try {
+    // 尝试使用新方法（Interactions API + 结构化输出）
+    const { analyzeBitableIntentStructured } = await import('./gemini-interactions')
+    const operation = await analyzeBitableIntentStructured(userMessage, tableFields)
+
+    console.log('[Gemini] 使用 Interactions API 结构化输出成功')
+    return operation
+
+  } catch (error) {
+    // 降级：使用传统方法
+    console.warn('[Gemini] Interactions API 失败，降级到传统方法:', error)
+    return await analyzeBitableIntent(userMessage, tableFields)
+  }
+}

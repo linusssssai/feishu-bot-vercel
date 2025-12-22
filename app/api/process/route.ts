@@ -27,12 +27,15 @@ import {
   generateImage,
   generateImageWithReferences,
   analyzeBitableIntent,
+  analyzeBitableIntentWithFallback,
   generateBitableResponse,
   BitableOperation
 } from '@/lib/gemini'
+import { ConversationManager } from '@/lib/conversation-state'
+import { analyzeBitableIntentWithContext } from '@/lib/gemini-interactions'
 
-// 用户会话中的多维表格上下文
-const userBitableContext = new Map<string, { appToken: string; tableId: string; fields?: any[] }>()
+// 用户会话中的多维表格上下文 - 现在由 ConversationManager 管理
+// const userBitableContext = new Map<string, { appToken: string; tableId: string; fields?: any[] }>()  // 已废弃
 
 export async function POST(request: NextRequest) {
   try {
@@ -55,7 +58,9 @@ export async function POST(request: NextRequest) {
       if (bitableUrl && bitableUrl.appToken) {
         // 用户发送了多维表格链接，保存上下文
         console.log(`[Process] 检测到多维表格链接: ${bitableUrl.appToken}/${bitableUrl.tableId}`)
-        userBitableContext.set(sessionId, bitableUrl)
+        ConversationManager.updateContext(sessionId, {
+          bitableContext: bitableUrl
+        })
 
         // 获取表格信息
         let replyText = '✅ 已识别多维表格链接\n\n'
@@ -63,7 +68,9 @@ export async function POST(request: NextRequest) {
         if (bitableUrl.tableId) {
           // 有具体表格ID，获取字段信息
           const fields = await getBitableFields(bitableUrl.appToken, bitableUrl.tableId)
-          userBitableContext.set(sessionId, { ...bitableUrl, fields })
+          ConversationManager.updateContext(sessionId, {
+            bitableContext: { ...bitableUrl, fields }
+          })
 
           replyText += `📊 表格字段:\n`
           fields.forEach(f => {
@@ -205,14 +212,20 @@ const DEFAULT_BITABLE = {
 
 /**
  * 判断是否是多维表格操作命令
+ * 增强版：支持上下文相关的关键词
  */
 function isBitableCommand(text: string): boolean {
   const keywords = [
-    '查询', '查看', '搜索', '获取',
-    '添加', '新增', '创建', '插入',
-    '修改', '更新', '编辑',
-    '删除', '移除',
-    '表格', '记录', '数据表'
+    // 查询相关
+    '查询', '查看', '搜索', '获取', '看看', '看一下', '查一下',
+    // 添加相关
+    '添加', '新增', '创建', '插入', '再添加', '再加', '再来', '继续', '还要',
+    // 修改相关
+    '修改', '更新', '编辑', '改',
+    // 删除相关
+    '删除', '移除', '删掉',
+    // 表格/记录相关
+    '表格', '记录', '数据表', '条记录', '条数据'
   ]
   return keywords.some(k => text.includes(k))
 }
@@ -243,8 +256,9 @@ function getFieldTypeName(type: number): string {
 async function handleBitableOperation(messageId: string, sessionId: string, textContent: string) {
   console.log(`[Process] 处理多维表格操作: ${textContent.substring(0, 50)}...`)
 
-  // 获取上下文或使用默认表格
-  let context = userBitableContext.get(sessionId)
+  // 获取会话上下文
+  const conversationCtx = ConversationManager.getContext(sessionId)
+  let context = conversationCtx.bitableContext
 
   // 如果没有上下文，尝试使用默认配置
   if (!context && DEFAULT_BITABLE.appToken && DEFAULT_BITABLE.tableId) {
@@ -271,12 +285,30 @@ async function handleBitableOperation(messageId: string, sessionId: string, text
   // 获取字段信息（如果没有缓存）
   if (!context.fields) {
     context.fields = await getBitableFields(context.appToken, context.tableId)
-    userBitableContext.set(sessionId, context)
+    ConversationManager.updateContext(sessionId, {
+      bitableContext: context
+    })
   }
 
-  // 分析用户意图
-  const operation = await analyzeBitableIntent(textContent, context.fields)
-  console.log(`[Process] Bitable操作类型: ${operation.type}`)
+  // 分析用户意图（使用带上下文的方法）
+  // 优先使用 Interactions API 的会话上下文，失败时降级到无上下文方法
+  let operation: BitableOperation
+  let newInteractionId: string | undefined
+
+  try {
+    const result = await analyzeBitableIntentWithContext(
+      textContent,
+      conversationCtx.lastInteractionId,  // 传递上一次的 interaction ID
+      context.fields
+    )
+    operation = result.operation
+    newInteractionId = result.interactionId
+    console.log(`[Process] Bitable操作类型: ${operation.type}, 使用会话上下文`)
+  } catch (error) {
+    console.warn('[Process] 带上下文的意图分析失败，降级到无上下文方法:', error)
+    operation = await analyzeBitableIntentWithFallback(textContent, context.fields)
+    console.log(`[Process] Bitable操作类型: ${operation.type}, 降级模式`)
+  }
 
   try {
     let result: any
@@ -374,9 +406,11 @@ async function handleBitableOperation(messageId: string, sessionId: string, text
 
           // 更新上下文到新表格
           if (newTableId) {
-            userBitableContext.set(sessionId, {
-              appToken: context.appToken,
-              tableId: newTableId,
+            ConversationManager.updateContext(sessionId, {
+              bitableContext: {
+                appToken: context.appToken,
+                tableId: newTableId,
+              }
             })
           }
         }
@@ -388,6 +422,14 @@ async function handleBitableOperation(messageId: string, sessionId: string, text
     }
 
     await replyMessage(messageId, responseText)
+
+    // 保存新的 interaction ID（如果有）
+    if (newInteractionId) {
+      ConversationManager.updateContext(sessionId, {
+        lastInteractionId: newInteractionId
+      })
+      console.log(`[Process] 已保存 interaction ID: ${newInteractionId}`)
+    }
 
   } catch (error) {
     console.error('[Process] Bitable操作错误:', error)
