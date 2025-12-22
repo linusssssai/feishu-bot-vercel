@@ -74,6 +74,34 @@ ${context ? `上下文信息：${context}` : ''}
 }
 
 /**
+ * 带降级的普通对话
+ * 优先使用 Interactions API（有会话记忆），失败时回退到传统方法
+ */
+export async function generateAssistantReplyWithFallback(
+  userMessage: string,
+  previousInteractionId?: string
+): Promise<{ reply: string; interactionId?: string }> {
+  try {
+    // 尝试使用 Interactions API（带会话记忆）
+    const { chatWithContext } = await import('./gemini-interactions')
+    const result = await chatWithContext(userMessage, previousInteractionId)
+
+    console.log('[Gemini] 使用 Interactions API 对话成功（有会话记忆）')
+    return result
+
+  } catch (error) {
+    // 降级：使用传统方法（无会话记忆）
+    console.warn('[Gemini] Interactions API 失败，降级到传统方法:', error)
+    const reply = await generateAssistantReply(userMessage)
+
+    return {
+      reply,
+      interactionId: undefined  // 降级模式没有 interaction ID
+    }
+  }
+}
+
+/**
  * 图片分析助手
  */
 export async function analyzeImage(

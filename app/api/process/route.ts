@@ -22,6 +22,7 @@ import {
 } from '@/lib/feishu'
 import {
   generateAssistantReply,
+  generateAssistantReplyWithFallback,
   analyzeImage,
   analyzeUserIntent,
   generateImage,
@@ -108,11 +109,36 @@ export async function POST(request: NextRequest) {
           const imageResult = await generateImage(textContent)
           await handleImageResult(messageId, imageResult)
         } else {
-          // 普通文字回复
+          // 普通文字回复（使用 Interactions API + 会话记忆）
           console.log(`[Process] 调用Gemini处理文本: ${textContent.substring(0, 50)}...`)
-          const replyText = await generateAssistantReply(textContent)
-          console.log(`[Process] 发送回复: ${replyText.substring(0, 50)}...`)
-          await replyMessage(messageId, replyText)
+
+          // 获取会话上下文
+          const conversationCtx = ConversationManager.getContext(sessionId)
+
+          try {
+            // 尝试使用 Interactions API（带降级）
+            const result = await generateAssistantReplyWithFallback(
+              textContent,
+              conversationCtx.lastInteractionId
+            )
+
+            const replyText = result.reply
+            console.log(`[Process] 发送回复: ${replyText.substring(0, 50)}...`)
+            await replyMessage(messageId, replyText)
+
+            // 保存新的 interaction ID（如果有）
+            if (result.interactionId) {
+              ConversationManager.updateContext(sessionId, {
+                lastInteractionId: result.interactionId
+              })
+              console.log(`[Process] 已保存普通对话 interaction ID: ${result.interactionId}`)
+            }
+          } catch (error) {
+            // 最后的保底：如果降级也失败，使用传统方法
+            console.error('[Process] 所有方法均失败，使用传统方法保底:', error)
+            const replyText = await generateAssistantReply(textContent)
+            await replyMessage(messageId, replyText)
+          }
         }
       }
     }

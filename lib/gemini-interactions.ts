@@ -212,3 +212,62 @@ export async function analyzeBitableIntentWithContext(
     throw error
   }
 }
+
+/**
+ * 使用 Interactions API 的普通文字对话（带会话记忆）
+ * 不使用结构化输出，让模型自由返回自然语言
+ */
+export async function chatWithContext(
+  userMessage: string,
+  previousInteractionId?: string
+): Promise<{ reply: string; interactionId: string }> {
+  const client = getInteractionsClient()
+
+  const prompt = `你是一个智能飞书机器人助手。请用简洁友好的中文回复用户。
+
+用户消息：${userMessage}
+
+请直接回复用户，不要加任何前缀。`
+
+  console.log('[Gemini Interactions] 开始普通对话处理...')
+  if (previousInteractionId) {
+    console.log(`[Gemini Interactions] 使用上一次 interaction ID: ${previousInteractionId}`)
+  }
+
+  try {
+    const interaction = await client.interactions.create({
+      model: 'gemini-3-flash-preview',
+      input: prompt,
+      previous_interaction_id: previousInteractionId,  // 关键：保持上下文
+      // 注意：不传 response_format，让模型自由返回文本
+    })
+
+    const outputs = interaction.outputs
+    if (!outputs || outputs.length === 0) {
+      throw new Error('No outputs from interaction')
+    }
+
+    const lastOutput = outputs[outputs.length - 1]
+
+    if (lastOutput.type !== 'text') {
+      throw new Error(`Unexpected output type: ${lastOutput.type}`)
+    }
+
+    if (!lastOutput.text) {
+      throw new Error('Output text is empty')
+    }
+
+    const reply = lastOutput.text
+
+    console.log(`[Gemini Interactions] 对话成功, interaction ID: ${interaction.id}`)
+
+    return {
+      reply,
+      interactionId: interaction.id
+    }
+
+  } catch (error) {
+    console.error('[Gemini Interactions] 对话失败:', error)
+    throw error
+  }
+}
