@@ -20,7 +20,7 @@ function getGeminiClient() {
  */
 export async function chatWithText(prompt: string): Promise<string> {
   const genAI = getGeminiClient()
-  const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' })
+  const model = genAI.getGenerativeModel({ model: 'gemini-3-flash-preview' })
 
   const result = await model.generateContent(prompt)
   const response = await result.response
@@ -36,7 +36,7 @@ export async function chatWithImage(
   mimeType: string = 'image/png'
 ): Promise<string> {
   const genAI = getGeminiClient()
-  const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' })
+  const model = genAI.getGenerativeModel({ model: 'gemini-3-flash-preview' })
 
   // 将图片转为 base64
   const base64Image = Buffer.from(imageData).toString('base64')
@@ -104,7 +104,7 @@ function getGenAIClient() {
  */
 export async function analyzeUserIntent(userMessage: string): Promise<'text' | 'image_generation'> {
   const genAI = getGeminiClient()
-  const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' })
+  const model = genAI.getGenerativeModel({ model: 'gemini-3-flash-preview' })
 
   const prompt = `分析以下用户消息的意图。判断用户是想要：
 1. 普通文字对话/问答 -> 返回 "text"
@@ -254,7 +254,7 @@ export async function analyzeBitableIntent(
   tableFields?: any[]
 ): Promise<BitableOperation> {
   const genAI = getGeminiClient()
-  const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' })
+  const model = genAI.getGenerativeModel({ model: 'gemini-3-flash-preview' })
 
   const fieldInfo = tableFields
     ? `\n当前表格字段: ${JSON.stringify(tableFields.map(f => ({ name: f.field_name, type: f.type })))}`
@@ -320,7 +320,7 @@ export async function generateBitableResponse(
   error?: string
 ): Promise<string> {
   const genAI = getGeminiClient()
-  const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' })
+  const model = genAI.getGenerativeModel({ model: 'gemini-3-flash-preview' })
 
   const prompt = `根据多维表格操作结果生成友好的中文回复。
 
