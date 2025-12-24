@@ -93,6 +93,54 @@ export async function POST(request: NextRequest) {
 
         await replyMessage(messageId, replyText)
       }
+      // 检查是否明确提到图片相关操作（优先级高于多维表格）
+      else if (isImageRelatedRequest(textContent)) {
+        console.log(`[Process] 检测到图片相关请求，分析意图...`)
+        const intent = await analyzeUserIntent(textContent)
+        console.log(`[Process] 用户意图: ${intent}`)
+
+        if (intent === 'image_generation') {
+          // 图片生成/编辑（使用 Interactions API + 会话记忆）
+          console.log(`[Process] 开始生成/编辑图片...`)
+
+          // 获取会话上下文
+          const conversationCtx = await ConversationManager.getContext(sessionId)
+
+          const imageResult = await generateImage(textContent, conversationCtx.lastInteractionId)
+          await handleImageResult(messageId, sessionId, imageResult)
+        } else {
+          // 普通文字回复（使用 Interactions API + 会话记忆）
+          console.log(`[Process] 调用Gemini处理文本: ${textContent.substring(0, 50)}...`)
+
+          // 获取会话上下文
+          const conversationCtx = await ConversationManager.getContext(sessionId)
+
+          try {
+            // 尝试使用 Interactions API（带降级）
+            const result = await generateAssistantReplyWithFallback(
+              textContent,
+              conversationCtx.lastInteractionId
+            )
+
+            const replyText = result.reply
+            console.log(`[Process] 发送回复: ${replyText.substring(0, 50)}...`)
+            await replyMessage(messageId, replyText)
+
+            // 保存新的 interaction ID（如果有）
+            if (result.interactionId) {
+              await ConversationManager.updateContext(sessionId, {
+                lastInteractionId: result.interactionId
+              })
+              console.log(`[Process] 已保存普通对话 interaction ID: ${result.interactionId}`)
+            }
+          } catch (error) {
+            // 最后的保底：如果降级也失败，使用传统方法
+            console.error('[Process] 所有方法均失败，使用传统方法保底:', error)
+            const replyText = await generateAssistantReply(textContent)
+            await replyMessage(messageId, replyText)
+          }
+        }
+      }
       // 检查是否是多维表格操作命令
       else if (isBitableCommand(textContent)) {
         await handleBitableOperation(messageId, sessionId, textContent)
@@ -267,6 +315,20 @@ const DEFAULT_BITABLE = {
 }
 
 /**
+ * 判断是否是图片相关请求
+ * 优先级高于多维表格操作判断
+ */
+function isImageRelatedRequest(text: string): boolean {
+  const imageKeywords = [
+    '图片', '图', '这张图', '那张图', '上面的图', '刚才的图',
+    '画', '生成', '绘制', '创作',
+    '背景', '颜色', '大小', '尺寸', '清晰',
+    '把图', '这图', '改图', '修改图片', '编辑图片'
+  ]
+  return imageKeywords.some(k => text.includes(k))
+}
+
+/**
  * 判断是否是多维表格操作命令
  * 增强版：支持上下文相关的关键词
  */
@@ -277,7 +339,7 @@ function isBitableCommand(text: string): boolean {
     // 添加相关
     '添加', '新增', '创建', '插入', '再添加', '再加', '再来', '继续', '还要',
     // 修改相关
-    '修改', '更新', '编辑', '改',
+    '修改', '更新', '编辑',
     // 删除相关
     '删除', '移除', '删掉',
     // 表格/记录相关
