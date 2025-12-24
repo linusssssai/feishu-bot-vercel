@@ -3,6 +3,8 @@
  * 使用 Interactions API 的 previous_interaction_id 保持上下文
  */
 
+import { SupabaseSessionStore } from './session-store'
+
 /**
  * 会话上下文接口
  */
@@ -58,18 +60,19 @@ export class ConversationManager {
    * @param sessionId 会话 ID（通常是 chatId 或 messageId）
    * @returns 会话上下文，如果不存在则返回空对象
    */
-  static getContext(sessionId: string): ConversationContext {
-    const context = sessionCache.get(sessionId)
-
-    if (!context) {
-      return {}
+  static async getContext(sessionId: string): Promise<ConversationContext> {
+    // 先检查内存缓存（快速路径）
+    const cached = sessionCache.get(sessionId)
+    if (cached && !this.isExpired(cached)) {
+      return cached
     }
 
-    // 检查是否过期
-    if (this.isExpired(context)) {
-      console.log(`[ConversationManager] Session ${sessionId} expired, removing...`)
-      sessionCache.delete(sessionId)
-      return {}
+    // 从 Supabase 获取
+    const context = await SupabaseSessionStore.getSession(sessionId)
+
+    // 保存到内存缓存
+    if (context && Object.keys(context).length > 0) {
+      sessionCache.set(sessionId, context)
     }
 
     return context
@@ -80,7 +83,7 @@ export class ConversationManager {
    * @param sessionId 会话 ID
    * @param updates 要更新的字段
    */
-  static updateContext(sessionId: string, updates: Partial<ConversationContext>) {
+  static async updateContext(sessionId: string, updates: Partial<ConversationContext>): Promise<void> {
     const existing = sessionCache.get(sessionId) || {}
     const updated: ConversationContext = {
       ...existing,
@@ -88,14 +91,15 @@ export class ConversationManager {
       lastUpdateTime: Date.now()
     }
 
+    // 同步更新内存缓存
     sessionCache.set(sessionId, updated)
 
-    // 触发清理检查（如果会话数量过多）
-    if (sessionCache.size > this.config.maxSessions) {
-      this.cleanup()
-    }
+    // 异步保存到 Supabase（不等待完成）
+    SupabaseSessionStore.saveSession(sessionId, updated).catch(err => {
+      console.error(`[ConversationManager] Failed to save session ${sessionId}:`, err)
+    })
 
-    console.log(`[ConversationManager] Updated session ${sessionId}, total sessions: ${sessionCache.size}`)
+    console.log(`[ConversationManager] Updated session ${sessionId}`)
   }
 
   /**

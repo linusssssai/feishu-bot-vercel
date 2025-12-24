@@ -59,7 +59,7 @@ export async function POST(request: NextRequest) {
       if (bitableUrl && bitableUrl.appToken) {
         // 用户发送了多维表格链接，保存上下文
         console.log(`[Process] 检测到多维表格链接: ${bitableUrl.appToken}/${bitableUrl.tableId}`)
-        ConversationManager.updateContext(sessionId, {
+        await ConversationManager.updateContext(sessionId, {
           bitableContext: bitableUrl
         })
 
@@ -69,7 +69,7 @@ export async function POST(request: NextRequest) {
         if (bitableUrl.tableId) {
           // 有具体表格ID，获取字段信息
           const fields = await getBitableFields(bitableUrl.appToken, bitableUrl.tableId)
-          ConversationManager.updateContext(sessionId, {
+          await ConversationManager.updateContext(sessionId, {
             bitableContext: { ...bitableUrl, fields }
           })
 
@@ -113,7 +113,7 @@ export async function POST(request: NextRequest) {
           console.log(`[Process] 调用Gemini处理文本: ${textContent.substring(0, 50)}...`)
 
           // 获取会话上下文
-          const conversationCtx = ConversationManager.getContext(sessionId)
+          const conversationCtx = await ConversationManager.getContext(sessionId)
 
           try {
             // 尝试使用 Interactions API（带降级）
@@ -128,7 +128,7 @@ export async function POST(request: NextRequest) {
 
             // 保存新的 interaction ID（如果有）
             if (result.interactionId) {
-              ConversationManager.updateContext(sessionId, {
+              await ConversationManager.updateContext(sessionId, {
                 lastInteractionId: result.interactionId
               })
               console.log(`[Process] 已保存普通对话 interaction ID: ${result.interactionId}`)
@@ -283,7 +283,7 @@ async function handleBitableOperation(messageId: string, sessionId: string, text
   console.log(`[Process] 处理多维表格操作: ${textContent.substring(0, 50)}...`)
 
   // 获取会话上下文
-  const conversationCtx = ConversationManager.getContext(sessionId)
+  const conversationCtx = await ConversationManager.getContext(sessionId)
   let context = conversationCtx.bitableContext
 
   // 如果没有上下文，尝试使用默认配置
@@ -311,7 +311,7 @@ async function handleBitableOperation(messageId: string, sessionId: string, text
   // 获取字段信息（如果没有缓存）
   if (!context.fields) {
     context.fields = await getBitableFields(context.appToken, context.tableId)
-    ConversationManager.updateContext(sessionId, {
+    await ConversationManager.updateContext(sessionId, {
       bitableContext: context
     })
   }
@@ -432,7 +432,7 @@ async function handleBitableOperation(messageId: string, sessionId: string, text
 
           // 更新上下文到新表格
           if (newTableId) {
-            ConversationManager.updateContext(sessionId, {
+            await ConversationManager.updateContext(sessionId, {
               bitableContext: {
                 appToken: context.appToken,
                 tableId: newTableId,
@@ -451,7 +451,7 @@ async function handleBitableOperation(messageId: string, sessionId: string, text
 
     // 保存新的 interaction ID（如果有）
     if (newInteractionId) {
-      ConversationManager.updateContext(sessionId, {
+      await ConversationManager.updateContext(sessionId, {
         lastInteractionId: newInteractionId
       })
       console.log(`[Process] 已保存 interaction ID: ${newInteractionId}`)
