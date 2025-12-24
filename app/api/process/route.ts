@@ -104,10 +104,14 @@ export async function POST(request: NextRequest) {
         console.log(`[Process] 用户意图: ${intent}`)
 
         if (intent === 'image_generation') {
-          // 纯文字生成图片
+          // 纯文字生成图片（使用 Interactions API + 会话记忆）
           console.log(`[Process] 开始生成图片...`)
-          const imageResult = await generateImage(textContent)
-          await handleImageResult(messageId, imageResult)
+
+          // 获取会话上下文
+          const conversationCtx = await ConversationManager.getContext(sessionId)
+
+          const imageResult = await generateImage(textContent, conversationCtx.lastInteractionId)
+          await handleImageResult(messageId, sessionId, imageResult)
         } else {
           // 普通文字回复（使用 Interactions API + 会话记忆）
           console.log(`[Process] 调用Gemini处理文本: ${textContent.substring(0, 50)}...`)
@@ -142,13 +146,24 @@ export async function POST(request: NextRequest) {
         }
       }
     }
-    // 情况2: 单图消息（无文字）- 图片分析
+    // 情况2: 单图消息（无文字）- 图片分析（使用 Interactions API + 会话记忆）
     else if (msgType === 'image' && imageKeyArray.length === 1 && !textContent) {
       console.log(`[Process] 处理单图分析: ${imageKeyArray[0]}`)
       const imageData = await getImageResource(messageId, imageKeyArray[0])
       if (imageData) {
-        const replyText = await analyzeImage(imageData)
-        await replyMessage(messageId, replyText)
+        // 获取会话上下文
+        const conversationCtx = await ConversationManager.getContext(sessionId)
+
+        const result = await analyzeImage(imageData, undefined, conversationCtx.lastInteractionId)
+        await replyMessage(messageId, result.reply)
+
+        // 保存新的 interaction ID（如果有）
+        if (result.interactionId) {
+          await ConversationManager.updateContext(sessionId, {
+            lastInteractionId: result.interactionId
+          })
+          console.log(`[Process] 已保存图片分析 interaction ID: ${result.interactionId}`)
+        }
       } else {
         await replyMessage(messageId, '抱歉，无法获取图片内容。')
       }
@@ -167,17 +182,20 @@ export async function POST(request: NextRequest) {
         }
       }
 
+      // 获取会话上下文（用于图片生成/编辑的上下文记忆）
+      const conversationCtx = await ConversationManager.getContext(sessionId)
+
       if (imageBuffers.length === 0 && textContent) {
         // 没有成功下载图片，但有文字，当作纯文字生成
         console.log(`[Process] 无可用图片，使用纯文字生成`)
-        const imageResult = await generateImage(textContent)
-        await handleImageResult(messageId, imageResult)
+        const imageResult = await generateImage(textContent, conversationCtx.lastInteractionId)
+        await handleImageResult(messageId, sessionId, imageResult)
       } else if (imageBuffers.length > 0) {
-        // 有图片，调用多图生成
+        // 有图片，调用多图生成/编辑（带上下文记忆）
         const prompt = textContent || '请根据这些图片生成一张新的图片'
-        console.log(`[Process] 调用多图生成, 成功下载 ${imageBuffers.length} 张图片`)
-        const imageResult = await generateImageWithReferences(imageBuffers, prompt)
-        await handleImageResult(messageId, imageResult)
+        console.log(`[Process] 调用多图生成/编辑, 成功下载 ${imageBuffers.length} 张图片`)
+        const imageResult = await generateImageWithReferences(imageBuffers, prompt, conversationCtx.lastInteractionId)
+        await handleImageResult(messageId, sessionId, imageResult)
       } else {
         await replyMessage(messageId, '抱歉，无法获取图片内容，请重新发送。')
       }
@@ -198,10 +216,14 @@ export async function POST(request: NextRequest) {
 
 /**
  * 处理图片生成结果
+ * @param messageId - 消息ID
+ * @param sessionId - 会话ID（用于保存 interaction ID）
+ * @param imageResult - 图片生成结果（包含 interactionId）
  */
 async function handleImageResult(
   messageId: string,
-  imageResult: { text?: string; imageBase64?: string }
+  sessionId: string,
+  imageResult: { text?: string; imageBase64?: string; interactionId?: string }
 ) {
   if (imageResult.imageBase64) {
     // 上传图片到飞书
@@ -217,6 +239,14 @@ async function handleImageResult(
       // 如果有附带文字描述，也发送
       if (imageResult.text) {
         await replyMessage(messageId, imageResult.text)
+      }
+
+      // 保存新的 interaction ID（如果有）
+      if (imageResult.interactionId) {
+        await ConversationManager.updateContext(sessionId, {
+          lastInteractionId: imageResult.interactionId
+        })
+        console.log(`[Process] 已保存图片生成 interaction ID: ${imageResult.interactionId}`)
       }
     } else {
       await replyMessage(messageId, '抱歉，图片上传失败，请稍后重试。')

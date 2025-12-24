@@ -28,13 +28,15 @@ export async function chatWithText(prompt: string): Promise<string> {
 }
 
 /**
- * 多模态对话（图片+文字）
+ * 多模态对话（图片+文字）- 传统方法（作为降级备份）
  */
-export async function chatWithImage(
+async function chatWithImageLegacy(
   prompt: string,
   imageData: ArrayBuffer,
   mimeType: string = 'image/png'
 ): Promise<string> {
+  console.log('[Gemini] 使用传统方法进行图片对话')
+
   const genAI = getGeminiClient()
   const model = genAI.getGenerativeModel({ model: 'gemini-3-flash-preview' })
 
@@ -53,6 +55,39 @@ export async function chatWithImage(
 
   const response = await result.response
   return response.text()
+}
+
+/**
+ * 多模态对话（图片+文字）- 带降级
+ * 优先使用 Interactions API（支持上下文记忆），失败时回退到传统方法
+ */
+export async function chatWithImage(
+  prompt: string,
+  imageData: ArrayBuffer,
+  mimeType: string = 'image/png',
+  previousInteractionId?: string
+): Promise<{ reply: string; interactionId?: string }> {
+  try {
+    // 尝试使用 Interactions API（支持上下文记忆）
+    const { analyzeImageWithInteractions } = await import('./gemini-interactions')
+    const result = await analyzeImageWithInteractions(imageData, prompt, previousInteractionId)
+
+    console.log('[Gemini] 使用 Interactions API 图片对话成功（支持上下文记忆）')
+    return {
+      reply: result.reply,
+      interactionId: result.interactionId
+    }
+
+  } catch (error) {
+    // 降级：使用传统方法（无上下文记忆）
+    console.warn('[Gemini] Interactions API 失败，降级到传统方法:', error)
+    const reply = await chatWithImageLegacy(prompt, imageData, mimeType)
+
+    return {
+      reply,
+      interactionId: undefined  // 降级模式没有 interaction ID
+    }
+  }
 }
 
 /**
@@ -102,15 +137,16 @@ export async function generateAssistantReplyWithFallback(
 }
 
 /**
- * 图片分析助手
+ * 图片分析助手（带降级）
  */
 export async function analyzeImage(
   imageData: ArrayBuffer,
-  userPrompt?: string
-): Promise<string> {
+  userPrompt?: string,
+  previousInteractionId?: string
+): Promise<{ reply: string; interactionId?: string }> {
   const prompt = userPrompt || '请描述这张图片的内容，用中文回答。'
 
-  return await chatWithImage(prompt, imageData)
+  return await chatWithImage(prompt, imageData, 'image/png', previousInteractionId)
 }
 
 // ============ 图片生成功能 ============
@@ -151,11 +187,10 @@ export async function analyzeUserIntent(userMessage: string): Promise<'text' | '
 }
 
 /**
- * 生成图片
- * @returns { text?: string, imageBase64?: string }
+ * 生成图片（传统方法 - 作为降级备份）
  */
-export async function generateImage(prompt: string): Promise<{ text?: string; imageBase64?: string }> {
-  console.log(`[Gemini] 开始生成图片, prompt: ${prompt.substring(0, 50)}...`)
+async function generateImageLegacy(prompt: string): Promise<{ text?: string; imageBase64?: string }> {
+  console.log(`[Gemini] 使用传统方法生成图片, prompt: ${prompt.substring(0, 50)}...`)
 
   const ai = getGenAIClient()
 
@@ -190,17 +225,49 @@ export async function generateImage(prompt: string): Promise<{ text?: string; im
 }
 
 /**
- * 多图+文字生成图片
- * 支持最多14张参考图片 + 文字提示
- * @param imageBuffers - 图片数据数组
- * @param prompt - 用户提示词
- * @returns { text?: string, imageBase64?: string }
+ * 生成图片（带降级）
+ * 优先使用 Interactions API（支持上下文记忆），失败时回退到传统方法
+ * @returns { text?: string, imageBase64?: string, interactionId?: string }
  */
-export async function generateImageWithReferences(
+export async function generateImage(
+  prompt: string,
+  previousInteractionId?: string
+): Promise<{ text?: string; imageBase64?: string; interactionId?: string }> {
+  console.log(`[Gemini] 开始生成图片, prompt: ${prompt.substring(0, 50)}...`)
+
+  try {
+    // 尝试使用 Interactions API（支持上下文记忆）
+    const { generateImageWithInteractions } = await import('./gemini-interactions')
+    const result = await generateImageWithInteractions(prompt, previousInteractionId)
+
+    console.log('[Gemini] 使用 Interactions API 生成图片成功（支持上下文记忆）')
+    return {
+      text: result.text,
+      imageBase64: result.imageBase64,
+      interactionId: result.interactionId
+    }
+
+  } catch (error) {
+    // 降级：使用传统方法（无上下文记忆）
+    console.warn('[Gemini] Interactions API 失败，降级到传统方法:', error)
+    const result = await generateImageLegacy(prompt)
+
+    return {
+      text: result.text,
+      imageBase64: result.imageBase64,
+      interactionId: undefined  // 降级模式没有 interaction ID
+    }
+  }
+}
+
+/**
+ * 多图+文字生成图片（传统方法 - 作为降级备份）
+ */
+async function generateImageWithReferencesLegacy(
   imageBuffers: ArrayBuffer[],
   prompt: string
 ): Promise<{ text?: string; imageBase64?: string }> {
-  console.log(`[Gemini] 多图生成 - 图片数: ${imageBuffers.length}, prompt: ${prompt.substring(0, 50)}...`)
+  console.log(`[Gemini] 使用传统方法多图生成 - 图片数: ${imageBuffers.length}`)
 
   const ai = getGenAIClient()
 
@@ -260,6 +327,47 @@ export async function generateImageWithReferences(
   }
 
   return response
+}
+
+/**
+ * 多图+文字生成图片（带降级）
+ * 优先使用 Interactions API（支持上下文记忆），失败时回退到传统方法
+ * 支持最多14张参考图片 + 文字提示
+ * @param imageBuffers - 图片数据数组
+ * @param prompt - 用户提示词
+ * @param previousInteractionId - 可选的上一次 interaction ID（用于迭代修改）
+ * @returns { text?: string, imageBase64?: string, interactionId?: string }
+ */
+export async function generateImageWithReferences(
+  imageBuffers: ArrayBuffer[],
+  prompt: string,
+  previousInteractionId?: string
+): Promise<{ text?: string; imageBase64?: string; interactionId?: string }> {
+  console.log(`[Gemini] 多图生成 - 图片数: ${imageBuffers.length}, prompt: ${prompt.substring(0, 50)}...`)
+
+  try {
+    // 尝试使用 Interactions API（支持上下文记忆）
+    const { editImageWithInteractions } = await import('./gemini-interactions')
+    const result = await editImageWithInteractions(imageBuffers, prompt, previousInteractionId)
+
+    console.log('[Gemini] 使用 Interactions API 多图生成成功（支持上下文记忆）')
+    return {
+      text: result.text,
+      imageBase64: result.imageBase64,
+      interactionId: result.interactionId
+    }
+
+  } catch (error) {
+    // 降级：使用传统方法（无上下文记忆）
+    console.warn('[Gemini] Interactions API 失败，降级到传统方法:', error)
+    const result = await generateImageWithReferencesLegacy(imageBuffers, prompt)
+
+    return {
+      text: result.text,
+      imageBase64: result.imageBase64,
+      interactionId: undefined  // 降级模式没有 interaction ID
+    }
+  }
 }
 
 // ============ 多维表格操作分析 ============

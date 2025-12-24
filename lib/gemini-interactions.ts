@@ -271,3 +271,222 @@ export async function chatWithContext(
     throw error
   }
 }
+
+// ============ 多模态（图文混合）支持 ============
+
+/**
+ * 统一的多模态对话接口
+ * 支持：纯文字、纯图片、图文混合、跨轮次上下文记忆
+ *
+ * 使用场景：
+ * 1. 纯文字对话
+ * 2. 图片理解（图片 + 问题）
+ * 3. 图片生成（文字描述 → 图片）
+ * 4. 图片编辑（之前的图片 + 修改指令）
+ * 5. 多图融合（多张图片 + 融合指令）
+ */
+export async function chatWithInteractions(options: {
+  prompt: string
+  images?: ArrayBuffer[]  // 可选的图片数组
+  previousInteractionId?: string
+  responseModalities?: ('TEXT' | 'IMAGE')[]  // 期望的响应类型
+  model?: string  // 默认根据 responseModalities 自动选择
+}): Promise<{
+  reply?: string
+  imageBase64?: string
+  interactionId: string
+}> {
+  const {
+    prompt,
+    images,
+    previousInteractionId,
+    responseModalities = ['TEXT'],  // 默认只返回文字
+    model
+  } = options
+
+  const client = getInteractionsClient()
+
+  // 自动选择模型
+  const selectedModel = model || (
+    responseModalities.includes('IMAGE')
+      ? 'gemini-3-pro-image-preview'  // 需要生成图片
+      : 'gemini-3-flash-preview'       // 只需要文字
+  )
+
+  console.log(`[Gemini Interactions] 多模态对话 - 模型: ${selectedModel}, 响应类型: ${responseModalities.join('+')}`)
+  if (previousInteractionId) {
+    console.log(`[Gemini Interactions] 使用上一次 interaction ID: ${previousInteractionId}`)
+  }
+  if (images && images.length > 0) {
+    console.log(`[Gemini Interactions] 包含 ${images.length} 张图片`)
+  }
+
+  // 构建输入内容
+  // Interactions API 期望的格式是字符串（纯文字）或对象数组（多模态）
+  let input: string | any[]
+
+  if (!images || images.length === 0) {
+    // 纯文字输入
+    input = prompt
+  } else {
+    // 多模态输入（图片 + 文字）
+    input = [
+      { type: 'text', text: prompt }
+    ]
+
+    // 添加图片（如果有）
+    for (const imageBuffer of images.slice(0, 14)) {  // Gemini 最多支持14张参考图
+      input.push({
+        type: 'image',
+        image: {
+          data: Buffer.from(imageBuffer).toString('base64'),
+          mime_type: 'image/png'
+        }
+      })
+    }
+  }
+
+  try {
+    const createParams: any = {
+      model: selectedModel,
+      input,
+      previous_interaction_id: previousInteractionId
+    }
+
+    // 只在需要指定响应模态时才添加 generation_config
+    // 对于图片生成模型，需要明确指定 responseModalities
+    if (selectedModel === 'gemini-3-pro-image-preview') {
+      createParams.generation_config = {
+        response_modalities: responseModalities
+      }
+    }
+
+    const interaction = await client.interactions.create(createParams)
+
+    const outputs = interaction.outputs
+    if (!outputs || outputs.length === 0) {
+      throw new Error('No outputs from interaction')
+    }
+
+    const result: {
+      reply?: string
+      imageBase64?: string
+      interactionId: string
+    } = {
+      interactionId: interaction.id
+    }
+
+    // 解析所有输出
+    for (const output of outputs) {
+      if (output.type === 'text' && output.text) {
+        result.reply = output.text
+      } else if (output.type === 'image' && output.image) {
+        // 图片输出
+        if ('data' in output.image) {
+          result.imageBase64 = output.image.data as string
+          const size = (result.imageBase64.length / 1024).toFixed(2)
+          console.log(`[Gemini Interactions] 图片生成成功, 大小: ${size} KB`)
+        }
+      }
+    }
+
+    console.log(`[Gemini Interactions] 多模态对话成功, interaction ID: ${interaction.id}`)
+
+    return result
+
+  } catch (error) {
+    console.error('[Gemini Interactions] 多模态对话失败:', error)
+    throw error
+  }
+}
+
+/**
+ * 使用 Interactions API 生成图片（带上下文记忆）
+ *
+ * 使用场景：
+ * - 轮1: "画一只蓝色的猫" → 生成蓝猫
+ * - 轮2: "把猫改成红色" → AI 记住之前的蓝猫，生成红猫
+ * - 轮3: "加个帽子" → AI 记住红猫，生成戴帽子的红猫
+ */
+export async function generateImageWithInteractions(
+  prompt: string,
+  previousInteractionId?: string
+): Promise<{ text?: string; imageBase64?: string; interactionId: string }> {
+  console.log(`[Gemini Interactions] 图片生成 - prompt: ${prompt.substring(0, 50)}...`)
+
+  return await chatWithInteractions({
+    prompt,
+    previousInteractionId,
+    responseModalities: ['TEXT', 'IMAGE'],
+    model: 'gemini-3-pro-image-preview'
+  })
+}
+
+/**
+ * 使用 Interactions API 编辑/融合图片（带上下文记忆）
+ *
+ * 使用场景：
+ * - 单图编辑: [图片] + "把背景改成蓝天"
+ * - 多图融合: [图片A, 图片B] + "把这两张图融合"
+ * - 迭代修改: 基于上一次生成的图片继续修改（通过 previousInteractionId）
+ */
+export async function editImageWithInteractions(
+  images: ArrayBuffer[],
+  prompt: string,
+  previousInteractionId?: string
+): Promise<{ text?: string; imageBase64?: string; interactionId: string }> {
+  console.log(`[Gemini Interactions] 图片编辑 - 图片数: ${images.length}, prompt: ${prompt.substring(0, 50)}...`)
+
+  // 构建专业的编辑提示词
+  const enhancedPrompt = images.length > 1
+    ? `你是一个专业的AI助手，擅长分析图片并根据用户需求生成新图片。
+
+用户提供了 ${images.length} 张参考图片。
+
+用户的需求: "${prompt}"
+
+请根据参考图片和用户需求:
+1. 如果用户需要生成新图片，请生成一张结合参考图片元素的高质量图片
+2. 同时提供简短的中文说明（2-3句话），描述生成的图片内容
+
+请生成图片和说明。`
+    : prompt  // 单图编辑，直接使用用户的提示词
+
+  return await chatWithInteractions({
+    prompt: enhancedPrompt,
+    images,
+    previousInteractionId,
+    responseModalities: ['TEXT', 'IMAGE'],
+    model: 'gemini-3-pro-image-preview'
+  })
+}
+
+/**
+ * 使用 Interactions API 理解图片（带上下文记忆）
+ *
+ * 使用场景：
+ * - 图片问答: [图片] + "这张图片里有什么？"
+ * - 持续追问:
+ *   轮1: [图片] + "这是什么动物？"
+ *   轮2: "它的颜色是什么？" ← AI 记住之前的图片
+ */
+export async function analyzeImageWithInteractions(
+  imageData: ArrayBuffer,
+  prompt: string,
+  previousInteractionId?: string
+): Promise<{ reply: string; interactionId: string }> {
+  console.log(`[Gemini Interactions] 图片分析 - prompt: ${prompt.substring(0, 50)}...`)
+
+  const result = await chatWithInteractions({
+    prompt,
+    images: [imageData],
+    previousInteractionId,
+    responseModalities: ['TEXT'],  // 只需要文字回复
+    model: 'gemini-3-flash-preview'  // 图片理解用 flash 就够了
+  })
+
+  return {
+    reply: result.reply || '',
+    interactionId: result.interactionId
+  }
+}
