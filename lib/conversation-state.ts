@@ -64,18 +64,27 @@ export class ConversationManager {
     // 先检查内存缓存（快速路径）
     const cached = sessionCache.get(sessionId)
     if (cached && !this.isExpired(cached)) {
+      console.log(`[ConversationManager] Cache hit for session ${sessionId}`)
       return cached
     }
 
     // 从 Supabase 获取
-    const context = await SupabaseSessionStore.getSession(sessionId)
+    try {
+      const context = await SupabaseSessionStore.getSession(sessionId)
 
-    // 保存到内存缓存
-    if (context && Object.keys(context).length > 0) {
-      sessionCache.set(sessionId, context)
+      // 保存到内存缓存
+      if (context && Object.keys(context).length > 0) {
+        sessionCache.set(sessionId, context)
+        console.log(`[ConversationManager] Loaded from Supabase for session ${sessionId}`)
+        return context
+      }
+    } catch (error) {
+      console.error(`[ConversationManager] Failed to load from Supabase:`, error)
     }
 
-    return context
+    // 缓存未命中或 Supabase 失败
+    console.log(`[ConversationManager] Cache miss for session ${sessionId}`)
+    return {}
   }
 
   /**
@@ -94,12 +103,12 @@ export class ConversationManager {
     // 同步更新内存缓存
     sessionCache.set(sessionId, updated)
 
+    console.log(`[ConversationManager] Updated session ${sessionId}`, updated)
+
     // 异步保存到 Supabase（不等待完成）
     SupabaseSessionStore.saveSession(sessionId, updated).catch(err => {
       console.error(`[ConversationManager] Failed to save session ${sessionId}:`, err)
     })
-
-    console.log(`[ConversationManager] Updated session ${sessionId}`)
   }
 
   /**
