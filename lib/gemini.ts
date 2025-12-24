@@ -172,7 +172,12 @@ export async function analyzeUserIntent(userMessage: string): Promise<'text' | '
 
   const prompt = `分析以下用户消息的意图。判断用户是想要：
 1. 普通文字对话/问答 -> 返回 "text"
-2. 生成图片（例如：画一张xxx、生成xxx的图片、帮我画、创作一个xxx的图像、设计一个xxx等） -> 返回 "image_generation"
+2. 生成或编辑图片 -> 返回 "image_generation"
+
+图片相关的操作包括：
+- 生成新图片：画一张xxx、生成xxx的图片、帮我画、创作一个xxx的图像、设计一个xxx
+- 编辑图片：把这张图xxx、改成xxx、修改xxx、调整xxx、换成xxx、变成xxx
+- 图片属性修改：改颜色、改背景、改大小、改清晰度、加xxx、去掉xxx
 
 只返回 "text" 或 "image_generation"，不要返回其他内容。
 
