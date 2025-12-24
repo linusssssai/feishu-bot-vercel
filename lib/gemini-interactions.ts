@@ -378,12 +378,18 @@ export async function chatWithInteractions(options: {
 
     // 解析所有输出
     for (const output of outputs) {
-      if (output.type === 'text' && output.text) {
+      if (output.type === 'text' && 'text' in output && output.text) {
         result.reply = output.text
-      } else if (output.type === 'image' && output.image) {
-        // 图片输出
-        if ('data' in output.image) {
-          result.imageBase64 = output.image.data as string
+      } else if (output.type === 'image') {
+        // 图片输出 - 使用 any 类型避免 TypeScript 类型检查问题
+        const imageOutput = output as any
+        if (imageOutput.image && imageOutput.image.data) {
+          result.imageBase64 = imageOutput.image.data as string
+          const size = (result.imageBase64.length / 1024).toFixed(2)
+          console.log(`[Gemini Interactions] 图片生成成功, 大小: ${size} KB`)
+        } else if (imageOutput.data) {
+          // 备用：直接在 output 上的 data 字段
+          result.imageBase64 = imageOutput.data as string
           const size = (result.imageBase64.length / 1024).toFixed(2)
           console.log(`[Gemini Interactions] 图片生成成功, 大小: ${size} KB`)
         }
