@@ -55,21 +55,34 @@ export async function generateVideoFromText(
 
   console.log(`[Veo] 开始生成视频 - Prompt: ${prompt.substring(0, 100)}...`)
 
-  const operation = await client.models.generateVideos({
-    model: 'veo-3.1-generate-preview',
-    prompt,
-    config: defaultConfig as any
-  })
+  try {
+    const operation = await client.models.generateVideos({
+      model: 'veo-3.1-generate-preview',
+      prompt,
+      config: defaultConfig as any
+    })
 
-  console.log(`[Veo] Operation 创建成功: ${operation.name}`)
+    // 调试日志：查看返回的对象结构
+    console.log(`[Veo] API 返回对象:`, JSON.stringify(operation, null, 2))
 
-  if (!operation.name) {
-    throw new Error('Operation name is missing')
-  }
+    if (!operation) {
+      throw new Error('generateVideos() 返回了 undefined')
+    }
 
-  return {
-    operationName: operation.name,
-    estimatedTime: '预计 30-180 秒'
+    if (!operation.name) {
+      console.error('[Veo] Operation 对象缺少 name 属性:', operation)
+      throw new Error(`Operation name is missing. 返回的对象: ${JSON.stringify(operation)}`)
+    }
+
+    console.log(`[Veo] Operation 创建成功: ${operation.name}`)
+
+    return {
+      operationName: operation.name,
+      estimatedTime: '预计 30-180 秒'
+    }
+  } catch (error) {
+    console.error('[Veo] 视频生成 API 调用失败:', error)
+    throw error
   }
 }
 
