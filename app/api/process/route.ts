@@ -9,6 +9,8 @@ import {
   replyMessage,
   replyImageMessage,
   uploadImage,
+  uploadVideo,
+  replyVideoMessage,
   getImageResource,
   parseBitableUrl,
   getBitableRecords,
@@ -25,6 +27,7 @@ import {
   generateAssistantReplyWithFallback,
   analyzeImage,
   analyzeUserIntent,
+  analyzeVideoIntent,
   generateImage,
   generateImageWithReferences,
   analyzeBitableIntent,
@@ -32,6 +35,15 @@ import {
   generateBitableResponse,
   BitableOperation
 } from '@/lib/gemini'
+import {
+  generateVideoFromText,
+  generateVideoFromImage,
+  extendVideo,
+  pollVideoOperation,
+  downloadVideoFile,
+  isVideoUriValid,
+  getVeoClient
+} from '@/lib/gemini-veo'
 import { ConversationManager } from '@/lib/conversation-state'
 import { analyzeBitableIntentWithContext } from '@/lib/gemini-interactions'
 
@@ -101,13 +113,47 @@ export async function POST(request: NextRequest) {
 
         if (intent === 'image_generation') {
           // 图片生成/编辑（使用 Interactions API + 会话记忆）
-          console.log(`[Process] 开始生成/编辑图片...`)
-
-          // 获取会话上下文
           const conversationCtx = await ConversationManager.getContext(sessionId)
 
-          const imageResult = await generateImage(textContent, conversationCtx.lastInteractionId)
-          await handleImageResult(messageId, sessionId, imageResult)
+          // CRITICAL: 检查是否有上一次生成的图片（优先使用 URI）
+          const hasLastImage = conversationCtx.lastGeneratedImageUri || conversationCtx.lastGeneratedImage
+
+          if (hasLastImage) {
+            // 有上一张图 → 用户想要编辑/修改现有图片
+            console.log(`[Process] 检测到之前生成的图片，执行图片编辑...`)
+            console.log(`[Process] 上一次 interaction ID: ${conversationCtx.lastInteractionId}`)
+
+            // 构建强调"保持一致性"的编辑提示词
+            const editPrompt = `请在尽量保持构图、主体位置、风格一致的前提下，对这张图进行修改：${textContent}。除非我明确要求，否则不要添加新的主体或大幅改变构图。`
+
+            let imageInput: string | ArrayBuffer
+
+            // ✅ 优先使用 Files API URI
+            if (conversationCtx.lastGeneratedImageUri) {
+              console.log(`[Process] 使用 Files API URI 作为输入: ${conversationCtx.lastGeneratedImageUri}`)
+              imageInput = conversationCtx.lastGeneratedImageUri
+            } else if (conversationCtx.lastGeneratedImage) {
+              // 降级：使用 base64（旧数据兼容）
+              console.log(`[Process] 使用 base64 数据作为输入（降级模式）`)
+              const buffer = Buffer.from(conversationCtx.lastGeneratedImage, 'base64')
+              imageInput = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength)
+            } else {
+              throw new Error('No previous image found')
+            }
+
+            // 使用 generateImageWithReferences 并显式传入上一张图
+            const imageResult = await generateImageWithReferences(
+              [imageInput],  // ✅ 可以是 URI 字符串或 ArrayBuffer
+              editPrompt,
+              conversationCtx.lastInteractionId
+            )
+            await handleImageResult(messageId, sessionId, imageResult)
+          } else {
+            // 没有上一张图 → 用户想要生成全新图片
+            console.log(`[Process] 开始生成全新图片...`)
+            const imageResult = await generateImage(textContent, conversationCtx.lastInteractionId)
+            await handleImageResult(messageId, sessionId, imageResult)
+          }
         } else {
           // 普通文字回复（使用 Interactions API + 会话记忆）
           console.log(`[Process] 调用Gemini处理文本: ${textContent.substring(0, 50)}...`)
@@ -151,15 +197,54 @@ export async function POST(request: NextRequest) {
         const intent = await analyzeUserIntent(textContent)
         console.log(`[Process] 用户意图: ${intent}`)
 
-        if (intent === 'image_generation') {
+        if (intent === 'video_generation') {
+          // ✅ NEW: 视频生成流程（异步模式）
+          console.log(`[Process] 检测到视频生成请求`)
+          await handleVideoGeneration(messageId, chatId || messageId, textContent)
+        }
+        else if (intent === 'image_generation') {
           // 纯文字生成图片（使用 Interactions API + 会话记忆）
-          console.log(`[Process] 开始生成图片...`)
-
-          // 获取会话上下文
           const conversationCtx = await ConversationManager.getContext(sessionId)
 
-          const imageResult = await generateImage(textContent, conversationCtx.lastInteractionId)
-          await handleImageResult(messageId, sessionId, imageResult)
+          // CRITICAL: 检查是否有上一次生成的图片（优先使用 URI）
+          const hasLastImage = conversationCtx.lastGeneratedImageUri || conversationCtx.lastGeneratedImage
+
+          if (hasLastImage) {
+            // 有上一张图 → 用户想要编辑/修改现有图片
+            console.log(`[Process] 检测到之前生成的图片，执行图片编辑...`)
+            console.log(`[Process] 上一次 interaction ID: ${conversationCtx.lastInteractionId}`)
+
+            // 构建强调"保持一致性"的编辑提示词
+            const editPrompt = `请在尽量保持构图、主体位置、风格一致的前提下，对这张图进行修改：${textContent}。除非我明确要求，否则不要添加新的主体或大幅改变构图。`
+
+            let imageInput: string | ArrayBuffer
+
+            // ✅ 优先使用 Files API URI
+            if (conversationCtx.lastGeneratedImageUri) {
+              console.log(`[Process] 使用 Files API URI 作为输入: ${conversationCtx.lastGeneratedImageUri}`)
+              imageInput = conversationCtx.lastGeneratedImageUri
+            } else if (conversationCtx.lastGeneratedImage) {
+              // 降级：使用 base64（旧数据兼容）
+              console.log(`[Process] 使用 base64 数据作为输入（降级模式）`)
+              const buffer = Buffer.from(conversationCtx.lastGeneratedImage, 'base64')
+              imageInput = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength)
+            } else {
+              throw new Error('No previous image found')
+            }
+
+            // 使用 generateImageWithReferences 并显式传入上一张图
+            const imageResult = await generateImageWithReferences(
+              [imageInput],  // ✅ 可以是 URI 字符串或 ArrayBuffer
+              editPrompt,
+              conversationCtx.lastInteractionId
+            )
+            await handleImageResult(messageId, sessionId, imageResult)
+          } else {
+            // 没有上一张图 → 用户想要生成全新图片
+            console.log(`[Process] 开始生成全新图片...`)
+            const imageResult = await generateImage(textContent, conversationCtx.lastInteractionId)
+            await handleImageResult(messageId, sessionId, imageResult)
+          }
         } else {
           // 普通文字回复（使用 Interactions API + 会话记忆）
           console.log(`[Process] 调用Gemini处理文本: ${textContent.substring(0, 50)}...`)
@@ -271,9 +356,39 @@ export async function POST(request: NextRequest) {
 async function handleImageResult(
   messageId: string,
   sessionId: string,
-  imageResult: { text?: string; imageBase64?: string; interactionId?: string }
+  imageResult: {
+    text?: string
+    imageBase64?: string
+    imageUri?: string        // ✅ NEW
+    imageFileName?: string   // ✅ NEW
+    interactionId?: string
+  }
 ) {
   if (imageResult.imageBase64) {
+    // CRITICAL: 先保存状态（interaction ID + 图片 URI），再上传和发送
+    // 这样即使上传飞书失败，下次也能继续编辑这张图
+    if (imageResult.interactionId) {
+      const contextUpdate: any = {
+        lastInteractionId: imageResult.interactionId,
+        lastImageMessageId: messageId
+      }
+
+      // ✅ 优先存储 Files API URI
+      if (imageResult.imageUri) {
+        contextUpdate.lastGeneratedImageUri = imageResult.imageUri
+        contextUpdate.lastGeneratedImageFileName = imageResult.imageFileName
+        console.log(`[Process] 已保存图片 Files API URI: ${imageResult.imageUri}`)
+      } else {
+        // 降级：如果没有 URI，仍然存储 base64（向后兼容）
+        contextUpdate.lastGeneratedImage = imageResult.imageBase64
+        const imageSizeKB = (imageResult.imageBase64.length / 1024).toFixed(2)
+        console.log(`[Process] 已保存图片 base64 数据 (${imageSizeKB} KB) - 降级模式`)
+      }
+
+      await ConversationManager.updateContext(sessionId, contextUpdate)
+      console.log(`[Process] 已保存图片生成 interaction ID: ${imageResult.interactionId}`)
+    }
+
     // 上传图片到飞书
     console.log(`[Process] 上传图片到飞书...`)
     const imageBuffer = Buffer.from(imageResult.imageBase64, 'base64')
@@ -288,16 +403,9 @@ async function handleImageResult(
       if (imageResult.text) {
         await replyMessage(messageId, imageResult.text)
       }
-
-      // 保存新的 interaction ID（如果有）
-      if (imageResult.interactionId) {
-        await ConversationManager.updateContext(sessionId, {
-          lastInteractionId: imageResult.interactionId
-        })
-        console.log(`[Process] 已保存图片生成 interaction ID: ${imageResult.interactionId}`)
-      }
     } else {
       await replyMessage(messageId, '抱歉，图片上传失败，请稍后重试。')
+      // 注意：即使飞书上传失败，状态已保存，不影响下次编辑
     }
   } else {
     // 未生成图片
@@ -572,4 +680,170 @@ function convertFieldType(typeStr: string): number {
     'attachment': BITABLE_FIELD_TYPES.ATTACHMENT,
   }
   return typeMap[typeStr.toLowerCase()] || BITABLE_FIELD_TYPES.TEXT
+}
+
+// ============ 视频生成功能 ============
+
+/**
+ * 处理视频生成请求（异步模式）
+ * 立即返回状态消息，后台轮询生成结果
+ */
+async function handleVideoGeneration(
+  messageId: string,
+  sessionId: string,
+  textContent: string
+): Promise<void> {
+  const conversationCtx = await ConversationManager.getContext(sessionId)
+
+  // 分析详细意图
+  const videoIntent = await analyzeVideoIntent(
+    textContent,
+    !!conversationCtx.lastGeneratedImageUri,
+    !!conversationCtx.lastGeneratedVideoUri
+  )
+
+  console.log(`[Process] 视频意图: ${videoIntent.type}, 置信度: ${videoIntent.confidence}`)
+
+  try {
+    let operationResult: { operationName: string; estimatedTime: string }
+
+    // 根据意图类型选择生成方式
+    switch (videoIntent.type) {
+      case 'text_to_video':
+        console.log(`[Process] 文字生成视频: ${textContent}`)
+        operationResult = await generateVideoFromText(textContent)
+        break
+
+      case 'image_to_video':
+        if (!conversationCtx.lastGeneratedImageUri) {
+          await replyMessage(messageId, '❌ 没有找到可转换的图片，请先生成图片或发送图片')
+          return
+        }
+        console.log(`[Process] 图片转视频 - Image URI: ${conversationCtx.lastGeneratedImageUri}`)
+        operationResult = await generateVideoFromImage(
+          conversationCtx.lastGeneratedImageUri,
+          textContent
+        )
+        break
+
+      case 'video_extension':
+        if (!conversationCtx.lastGeneratedVideoUri) {
+          await replyMessage(messageId, '❌ 没有找到可延展的视频，请先生成视频')
+          return
+        }
+
+        // 检查视频是否过期（2天）
+        if (!isVideoUriValid(conversationCtx.videoGenerationTimestamp)) {
+          await replyMessage(messageId, '❌ 上一个视频已过期（超过2天），请重新生成')
+          return
+        }
+
+        console.log(`[Process] 延展视频 - Video URI: ${conversationCtx.lastGeneratedVideoUri}`)
+        operationResult = await extendVideo(
+          conversationCtx.lastGeneratedVideoUri,
+          textContent
+        )
+        break
+
+      case 'reference_images':
+        // TODO: 需要从消息中提取参考图片
+        await replyMessage(messageId, '💡 参考图片功能开发中，请稍后使用')
+        return
+
+      case 'interpolation':
+        // TODO: 需要提取第一帧和最后一帧
+        await replyMessage(messageId, '💡 帧插值功能开发中，请稍后使用')
+        return
+
+      default:
+        operationResult = await generateVideoFromText(textContent)
+    }
+
+    // TODO: 检查是否有正在进行的视频生成（暂时禁用，等待确认正确的API签名）
+    // const existingOperation = conversationCtx.lastVideoOperationName
+    // if (existingOperation && existingOperation !== operationResult.operationName) {
+    //   // 可以在这里检查是否有重复请求
+    // }
+
+    // 立即返回状态消息
+    await replyMessage(
+      messageId,
+      `🎬 视频生成已启动！\n📊 预计耗时: ${operationResult.estimatedTime}\n⏳ 正在后台处理，完成后将自动发送...\n\n💡 提示: 生成期间你可以继续发送其他消息`
+    )
+
+    // 保存Operation信息到会话状态
+    await ConversationManager.updateContext(sessionId, {
+      lastVideoOperationName: operationResult.operationName,
+      videoGenerationTimestamp: Date.now()
+    })
+
+    // ✅ 启动后台轮询任务（异步，不等待）
+    pollAndDeliverVideo(operationResult.operationName, messageId, sessionId).catch(error => {
+      console.error('[Process] 视频轮询失败:', error)
+      replyMessage(messageId, `❌ 视频生成失败: ${String(error)}`).catch(console.error)
+    })
+
+  } catch (error) {
+    console.error('[Process] 视频生成启动失败:', error)
+    await replyMessage(messageId, `❌ 视频生成失败: ${String(error)}`)
+  }
+}
+
+/**
+ * 轮询并交付视频（核心异步流程）
+ * 在后台运行，不阻塞主请求
+ */
+async function pollAndDeliverVideo(
+  operationName: string,
+  messageId: string,
+  sessionId: string
+): Promise<void> {
+  console.log(`[Process] 开始轮询视频生成: ${operationName}`)
+
+  try {
+    // Step 1: 轮询直到完成（最多6分钟）
+    const videoResult = await pollVideoOperation(
+      operationName,
+      36,  // 36次 * 10秒 = 6分钟
+      (attempt, total) => {
+        // 可选：每100秒发送一次进度更新
+        if (attempt % 10 === 0) {
+          const progress = Math.round((attempt / total) * 100)
+          console.log(`[Process] 视频生成进度: ${progress}% (${attempt}/${total})`)
+        }
+      }
+    )
+
+    console.log(`[Process] 视频生成完成 - URI: ${videoResult.videoUri}`)
+
+    // Step 2: 下载视频
+    console.log(`[Process] 开始下载视频...`)
+    const videoBuffer = await downloadVideoFile(videoResult.videoUri)
+
+    // Step 3: 上传到飞书
+    console.log(`[Process] 开始上传视频到飞书...`)
+    const videoKey = await uploadVideo(videoBuffer)
+
+    if (!videoKey) {
+      throw new Error('视频上传飞书失败')
+    }
+
+    // Step 4: 回复视频消息
+    console.log(`[Process] 发送视频消息: ${videoKey}`)
+    await replyVideoMessage(messageId, videoKey)
+
+    // Step 5: 保存视频URI到会话状态（用于延展）
+    await ConversationManager.updateContext(sessionId, {
+      lastGeneratedVideoUri: videoResult.videoUri,
+      lastGeneratedVideoFileName: videoResult.videoFileName,
+      lastVideoMessageId: messageId,
+      videoGenerationTimestamp: Date.now()
+    })
+
+    console.log(`[Process] 视频已成功交付并保存状态`)
+
+  } catch (error) {
+    console.error('[Process] 视频生成流程失败:', error)
+    throw error  // 重新抛出错误，由上层处理
+  }
 }

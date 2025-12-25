@@ -281,6 +281,114 @@ export async function sendImageMessage(
   return data.code === 0
 }
 
+// ============ 视频消息功能 ============
+
+/**
+ * 上传视频到飞书
+ * @param videoBuffer - 视频数据 (Buffer)
+ * @returns video_key 或 null
+ */
+export async function uploadVideo(videoBuffer: Buffer): Promise<string | null> {
+  try {
+    const token = await getTenantAccessToken()
+
+    // 创建 FormData - 将 Buffer 转为 Uint8Array 以兼容 Blob
+    const formData = new FormData()
+    formData.append('video_type', 'stream')  // 视频类型：stream
+    const uint8Array = new Uint8Array(videoBuffer)
+    formData.append('video', new Blob([uint8Array], { type: 'video/mp4' }), 'veo-video.mp4')
+
+    const response = await fetch(`${BASE_URL}/im/v1/videos`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+      },
+      body: formData,
+    })
+
+    const data = await response.json()
+
+    if (data.code === 0) {
+      console.log(`[Feishu] 视频上传成功: ${data.data?.video_key}`)
+      return data.data?.video_key || null
+    }
+
+    console.error('[Feishu] 上传视频失败:', data)
+    return null
+  } catch (error) {
+    console.error('[Feishu] 视频上传异常:', error)
+    return null
+  }
+}
+
+/**
+ * 回复视频消息
+ * @param messageId - 要回复的消息ID
+ * @param videoKey - 视频key
+ */
+export async function replyVideoMessage(messageId: string, videoKey: string): Promise<boolean> {
+  const token = await getTenantAccessToken()
+
+  const response = await fetch(`${BASE_URL}/im/v1/messages/${messageId}/reply`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      msg_type: 'video',
+      content: JSON.stringify({ video_key: videoKey }),
+    }),
+  })
+
+  const data = await response.json()
+
+  if (data.code === 0) {
+    console.log('[Feishu] 视频消息回复成功')
+    return true
+  }
+
+  console.error('[Feishu] 视频消息回复失败:', data)
+  return false
+}
+
+/**
+ * 发送视频消息到会话
+ * @param receiveId - 接收者ID（open_id 或 chat_id）
+ * @param videoKey - 视频key
+ * @param receiveIdType - 接收者类型
+ */
+export async function sendVideoMessage(
+  receiveId: string,
+  videoKey: string,
+  receiveIdType: 'open_id' | 'chat_id' = 'chat_id'
+): Promise<boolean> {
+  const token = await getTenantAccessToken()
+
+  const response = await fetch(`${BASE_URL}/im/v1/messages?receive_id_type=${receiveIdType}`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      receive_id: receiveId,
+      msg_type: 'video',
+      content: JSON.stringify({ video_key: videoKey }),
+    }),
+  })
+
+  const data = await response.json()
+
+  if (data.code === 0) {
+    console.log('[Feishu] 视频消息发送成功')
+    return true
+  }
+
+  console.error('[Feishu] 视频消息发送失败:', data)
+  return false
+}
+
 // ============ 多维表格扩展功能 ============
 
 /**

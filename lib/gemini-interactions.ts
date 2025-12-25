@@ -18,6 +18,82 @@ export function getInteractionsClient(): GoogleGenAI {
 }
 
 /**
+ * 上传图片到 Gemini Files API
+ * @param imageBuffer 图片二进制数据
+ * @param mimeType MIME 类型（默认 image/png）
+ * @returns 文件对象 { name, uri, state }
+ */
+export async function uploadToGeminiFiles(
+  imageBuffer: ArrayBuffer,
+  mimeType: string = 'image/png'
+): Promise<{ name: string; uri: string; state: string }> {
+  try {
+    const client = getInteractionsClient()
+
+    console.log(`[Gemini Files] 上传图片到 Files API，大小: ${(imageBuffer.byteLength / 1024).toFixed(2)} KB`)
+
+    // Upload file - Convert ArrayBuffer to Blob
+    const blob = new Blob([imageBuffer], { type: mimeType })
+    const file = await client.files.upload({
+      file: blob,
+      config: {
+        mimeType,
+        displayName: `feishu-bot-${Date.now()}.png`
+      }
+    })
+
+    if (!file.name || !file.uri) {
+      throw new Error('File upload failed: missing name or uri')
+    }
+
+    console.log(`[Gemini Files] 上传成功，文件名: ${file.name}，状态: ${file.state}`)
+
+    // Wait for file to become ACTIVE (required before use)
+    let attempts = 0
+    const maxAttempts = 10
+
+    while (file.state !== 'ACTIVE' && attempts < maxAttempts) {
+      await new Promise(resolve => setTimeout(resolve, 1000))
+      const updatedFile = await client.files.get({ name: file.name! })
+      file.state = updatedFile.state
+      console.log(`[Gemini Files] 等待处理... 状态: ${file.state} (${attempts + 1}/${maxAttempts})`)
+      attempts++
+    }
+
+    if (file.state !== 'ACTIVE') {
+      throw new Error(`File did not become ACTIVE after ${maxAttempts} attempts, state: ${file.state}`)
+    }
+
+    console.log(`[Gemini Files] 文件已就绪，URI: ${file.uri}`)
+
+    return {
+      name: file.name,
+      uri: file.uri,
+      state: file.state!
+    }
+
+  } catch (error) {
+    console.error('[Gemini Files] 上传失败:', error)
+    throw error
+  }
+}
+
+/**
+ * 删除 Gemini Files API 中的文件（清理旧文件）
+ * @param fileName 文件名（如 files/abc123）
+ */
+export async function deleteGeminiFile(fileName: string): Promise<void> {
+  try {
+    const client = getInteractionsClient()
+    await client.files.delete({ name: fileName })
+    console.log(`[Gemini Files] 已删除文件: ${fileName}`)
+  } catch (error) {
+    console.error(`[Gemini Files] 删除文件失败: ${fileName}`, error)
+    // 不抛出错误，删除失败不影响主流程
+  }
+}
+
+/**
  * Bitable 操作的 JSON Schema 定义
  * 用于 Interactions API 的 structured output
  */
@@ -287,13 +363,15 @@ export async function chatWithContext(
  */
 export async function chatWithInteractions(options: {
   prompt: string
-  images?: ArrayBuffer[]  // 可选的图片数组
+  images?: (ArrayBuffer | string)[]  // ✅ CHANGED: 支持 Files API URIs
   previousInteractionId?: string
   responseModalities?: ('TEXT' | 'IMAGE')[]  // 期望的响应类型
   model?: string  // 默认根据 responseModalities 自动选择
 }): Promise<{
   reply?: string
   imageBase64?: string
+  imageUri?: string        // ✅ NEW
+  imageFileName?: string   // ✅ NEW
   interactionId: string
 }> {
   const {
@@ -313,13 +391,13 @@ export async function chatWithInteractions(options: {
       : 'gemini-3-flash-preview'       // 只需要文字
   )
 
-  console.log(`[Gemini Interactions] 多模态对话 - 模型: ${selectedModel}, 响应类型: ${responseModalities.join('+')}`)
-  if (previousInteractionId) {
-    console.log(`[Gemini Interactions] 使用上一次 interaction ID: ${previousInteractionId}`)
-  }
-  if (images && images.length > 0) {
-    console.log(`[Gemini Interactions] 包含 ${images.length} 张图片`)
-  }
+  // === 详细请求日志 ===
+  console.log(`[Gemini Interactions] === REQUEST DEBUG ===`)
+  console.log(`[Gemini Interactions] 模型: ${selectedModel}`)
+  console.log(`[Gemini Interactions] 响应类型: ${responseModalities.join(', ')}`)
+  console.log(`[Gemini Interactions] Previous interaction ID: ${previousInteractionId || 'none'}`)
+  console.log(`[Gemini Interactions] 输入图片数: ${images?.length || 0}`)
+  console.log(`[Gemini Interactions] Prompt: ${prompt.substring(0, 100)}...`)
 
   // 构建输入内容
   // Interactions API 期望的格式是字符串（纯文字）或对象数组（多模态）
@@ -334,15 +412,34 @@ export async function chatWithInteractions(options: {
       { type: 'text', text: prompt }
     ]
 
-    // 添加图片（如果有）
-    for (const imageBuffer of images.slice(0, 14)) {  // Gemini 最多支持14张参考图
-      input.push({
-        type: 'image',
-        image: {
-          data: Buffer.from(imageBuffer).toString('base64'),
-          mime_type: 'image/png'
+    // 添加图片（支持 URI 或 base64）
+    // ✅ 优先使用 URI（Files API），降级到 base64
+    for (const image of images.slice(0, 14)) {  // Gemini 最多支持14张参考图
+      if (typeof image === 'string') {
+        // 如果是字符串，假设是 URI
+        input.push({
+          type: 'image',
+          uri: image
+        })
+      } else {
+        // 如果是 ArrayBuffer，上传到 Files API 获取 URI
+        console.log(`[Gemini Interactions] 上传图片到 Files API...`)
+        try {
+          const file = await uploadToGeminiFiles(image, 'image/png')
+          input.push({
+            type: 'image',
+            uri: file.uri
+          })
+        } catch (error) {
+          // 降级：如果 Files API 上传失败，使用 base64
+          console.warn('[Gemini Interactions] Files API 上传失败，降级到 base64:', error)
+          input.push({
+            type: 'image',
+            data: Buffer.from(image).toString('base64'),
+            mime_type: 'image/png'
+          })
         }
-      })
+      }
     }
   }
 
@@ -353,13 +450,18 @@ export async function chatWithInteractions(options: {
       previous_interaction_id: previousInteractionId
     }
 
-    // 只在需要指定响应模态时才添加 generation_config
-    // 对于图片生成模型，需要明确指定 responseModalities
-    if (selectedModel === 'gemini-3-pro-image-preview') {
-      createParams.generation_config = {
-        response_modalities: responseModalities
-      }
+    // ✅ CRITICAL FIX: Add response_modalities at TOP LEVEL
+    // Per official docs (line 1203-1207), this is REQUIRED for image generation
+    if (responseModalities.length > 0) {
+      createParams.response_modalities = responseModalities.map(m => m.toLowerCase())
     }
+
+    console.log(`[Gemini Interactions] Create params:`, {
+      model: createParams.model,
+      inputType: Array.isArray(input) ? `array[${input.length}]` : 'string',
+      response_modalities: createParams.response_modalities,
+      previous_interaction_id: createParams.previous_interaction_id || 'none'
+    })
 
     const interaction = await client.interactions.create(createParams)
 
@@ -371,6 +473,8 @@ export async function chatWithInteractions(options: {
     const result: {
       reply?: string
       imageBase64?: string
+      imageUri?: string        // ✅ NEW: Files API URI
+      imageFileName?: string   // ✅ NEW: For cleanup
       interactionId: string
     } = {
       interactionId: interaction.id
@@ -381,22 +485,51 @@ export async function chatWithInteractions(options: {
       if (output.type === 'text' && 'text' in output && output.text) {
         result.reply = output.text
       } else if (output.type === 'image') {
-        // 图片输出 - 使用 any 类型避免 TypeScript 类型检查问题
+        // 图片输出 - 立即上传到 Files API 获取 URI
         const imageOutput = output as any
+        let imageBase64: string | undefined
+
         if (imageOutput.image && imageOutput.image.data) {
-          result.imageBase64 = imageOutput.image.data as string
-          const size = (result.imageBase64.length / 1024).toFixed(2)
-          console.log(`[Gemini Interactions] 图片生成成功, 大小: ${size} KB`)
+          imageBase64 = imageOutput.image.data as string
         } else if (imageOutput.data) {
-          // 备用：直接在 output 上的 data 字段
-          result.imageBase64 = imageOutput.data as string
-          const size = (result.imageBase64.length / 1024).toFixed(2)
+          imageBase64 = imageOutput.data as string
+        }
+
+        if (imageBase64) {
+          const size = (imageBase64.length / 1024).toFixed(2)
           console.log(`[Gemini Interactions] 图片生成成功, 大小: ${size} KB`)
+
+          // ✅ NEW: 立即上传到 Files API 获取 URI
+          try {
+            const buffer = Buffer.from(imageBase64, 'base64')
+            const imageBuffer = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength)
+            const file = await uploadToGeminiFiles(imageBuffer, 'image/png')
+
+            // 同时返回 base64（用于发送到飞书）和 URI（用于存储）
+            result.imageBase64 = imageBase64
+            result.imageUri = file.uri
+            result.imageFileName = file.name
+
+            console.log(`[Gemini Interactions] 图片已上传到 Files API: ${file.uri}`)
+          } catch (error) {
+            console.error('[Gemini Interactions] Files API 上传失败，仅返回 base64:', error)
+            result.imageBase64 = imageBase64
+          }
         }
       }
     }
 
-    console.log(`[Gemini Interactions] 多模态对话成功, interaction ID: ${interaction.id}`)
+    // === 详细响应日志 ===
+    console.log(`[Gemini Interactions] === RESPONSE DEBUG ===`)
+    console.log(`[Gemini Interactions] Interaction ID: ${interaction.id}`)
+    console.log(`[Gemini Interactions] Output types: ${outputs.map(o => o.type).join(', ')}`)
+    if (result.reply) {
+      console.log(`[Gemini Interactions] Text output: ${result.reply.substring(0, 100)}...`)
+    }
+    if (result.imageBase64) {
+      console.log(`[Gemini Interactions] Image output size: ${(result.imageBase64.length / 1024).toFixed(2)} KB`)
+    }
+    console.log(`[Gemini Interactions] =========================`)
 
     return result
 
@@ -417,7 +550,13 @@ export async function chatWithInteractions(options: {
 export async function generateImageWithInteractions(
   prompt: string,
   previousInteractionId?: string
-): Promise<{ text?: string; imageBase64?: string; interactionId: string }> {
+): Promise<{
+  text?: string
+  imageBase64?: string
+  imageUri?: string        // ✅ NEW
+  imageFileName?: string   // ✅ NEW
+  interactionId: string
+}> {
   console.log(`[Gemini Interactions] 图片生成 - prompt: ${prompt.substring(0, 50)}...`)
 
   return await chatWithInteractions({
@@ -437,10 +576,16 @@ export async function generateImageWithInteractions(
  * - 迭代修改: 基于上一次生成的图片继续修改（通过 previousInteractionId）
  */
 export async function editImageWithInteractions(
-  images: ArrayBuffer[],
+  images: (ArrayBuffer | string)[],  // ✅ CHANGED: Support URIs
   prompt: string,
   previousInteractionId?: string
-): Promise<{ text?: string; imageBase64?: string; interactionId: string }> {
+): Promise<{
+  text?: string
+  imageBase64?: string
+  imageUri?: string        // ✅ NEW
+  imageFileName?: string   // ✅ NEW
+  interactionId: string
+}> {
   console.log(`[Gemini Interactions] 图片编辑 - 图片数: ${images.length}, prompt: ${prompt.substring(0, 50)}...`)
 
   // 构建专业的编辑提示词

@@ -13,6 +13,22 @@ export interface ConversationContext {
   lastInteractionId?: string
   lastUpdateTime?: number
 
+  // 图片上下文 - 用于迭代编辑
+  // ✅ CHANGED: 存储 Files API URI 而不是 base64
+  lastGeneratedImageUri?: string     // Files API URI (e.g., https://generativelanguage.googleapis.com/v1beta/files/abc123)
+  lastGeneratedImageFileName?: string // Files API 文件名 (e.g., files/abc123) - 用于清理
+  lastImageMessageId?: string        // 对应的飞书消息 ID（用于引用）
+
+  // 保留 base64 字段用于向后兼容（可选）
+  lastGeneratedImage?: string  // @deprecated - 迁移完成后可删除
+
+  // ✅ NEW: 视频上下文 - 用于延展
+  lastGeneratedVideoUri?: string      // Gemini Files API URI（2天有效）
+  lastGeneratedVideoFileName?: string // 文件名（用于引用）
+  lastVideoMessageId?: string         // 飞书消息ID
+  lastVideoOperationName?: string     // Operation名称（用于断点续传）
+  videoGenerationTimestamp?: number   // 生成时间戳（检查2天过期）
+
   // Bitable 上下文
   bitableContext?: {
     appToken: string
@@ -94,6 +110,26 @@ export class ConversationManager {
    */
   static async updateContext(sessionId: string, updates: Partial<ConversationContext>): Promise<void> {
     const existing = sessionCache.get(sessionId) || {}
+
+    // ✅ NEW: 清理旧的 Files API 文件（图片）
+    if (updates.lastGeneratedImageFileName && existing.lastGeneratedImageFileName) {
+      if (updates.lastGeneratedImageFileName !== existing.lastGeneratedImageFileName) {
+        // 新图片已生成，删除旧文件
+        const { deleteGeminiFile } = await import('./gemini-interactions')
+        deleteGeminiFile(existing.lastGeneratedImageFileName).catch(err => {
+          console.warn(`[ConversationManager] 清理旧图片失败: ${existing.lastGeneratedImageFileName}`, err)
+        })
+      }
+    }
+
+    // ✅ NEW: 清理旧的视频文件
+    if (updates.lastGeneratedVideoFileName && existing.lastGeneratedVideoFileName) {
+      if (updates.lastGeneratedVideoFileName !== existing.lastGeneratedVideoFileName) {
+        // 视频文件2天后自动删除，无需主动清理
+        console.log(`[ConversationManager] 新视频已生成，旧视频URI将在2天后过期`)
+      }
+    }
+
     const updated: ConversationContext = {
       ...existing,
       ...updates,

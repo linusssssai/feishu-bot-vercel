@@ -164,22 +164,45 @@ function getGenAIClient() {
 
 /**
  * 分析用户意图
- * @returns 'text' | 'image_generation'
+ * @returns 'text' | 'image_generation' | 'video_generation'
  */
-export async function analyzeUserIntent(userMessage: string): Promise<'text' | 'image_generation'> {
+export async function analyzeUserIntent(userMessage: string): Promise<'text' | 'image_generation' | 'video_generation'> {
+  // ✅ 视频生成关键词检测（优先级最高）
+  const videoKeywords = [
+    '生成视频', '做视频', '制作视频', '创建视频', '视频生成',
+    'generate video', 'create video', 'make video',
+    '动画', '动起来', '动态', '运动',
+    '延展视频', '延长视频', '继续视频', '视频延展',
+    '参考图片生成视频', '帧插值', '第一帧', '最后一帧'
+  ]
+
+  const lowerMessage = userMessage.toLowerCase()
+
+  // 检查是否包含视频关键词
+  if (videoKeywords.some(keyword => lowerMessage.includes(keyword.toLowerCase()))) {
+    console.log('[Gemini] 意图分析结果: video_generation')
+    return 'video_generation'
+  }
+
   const genAI = getGeminiClient()
   const model = genAI.getGenerativeModel({ model: 'gemini-3-flash-preview' })
 
   const prompt = `分析以下用户消息的意图。判断用户是想要：
 1. 普通文字对话/问答 -> 返回 "text"
 2. 生成或编辑图片 -> 返回 "image_generation"
+3. 生成或编辑视频 -> 返回 "video_generation"
 
 图片相关的操作包括：
 - 生成新图片：画一张xxx、生成xxx的图片、帮我画、创作一个xxx的图像、设计一个xxx
 - 编辑图片：把这张图xxx、改成xxx、修改xxx、调整xxx、换成xxx、变成xxx
 - 图片属性修改：改颜色、改背景、改大小、改清晰度、加xxx、去掉xxx
 
-只返回 "text" 或 "image_generation"，不要返回其他内容。
+视频相关的操作包括：
+- 生成视频：生成视频、做视频、制作视频、创建视频
+- 图片转视频：让图片动起来、转成视频、变成视频、图片变动画
+- 视频延展：延展视频、延长视频、继续视频
+
+只返回 "text"、"image_generation" 或 "video_generation"，不要返回其他内容。
 
 用户消息：${userMessage}`
 
@@ -188,7 +211,76 @@ export async function analyzeUserIntent(userMessage: string): Promise<'text' | '
   const intent = response.text().trim().toLowerCase()
 
   console.log(`[Gemini] 意图分析结果: ${intent}`)
-  return intent.includes('image_generation') ? 'image_generation' : 'text'
+
+  if (intent.includes('video_generation')) {
+    return 'video_generation'
+  } else if (intent.includes('image_generation')) {
+    return 'image_generation'
+  } else {
+    return 'text'
+  }
+}
+
+/**
+ * 分析视频生成意图（详细）
+ * @param userMessage - 用户消息
+ * @param hasLastImage - 是否有上一次生成的图片
+ * @param hasLastVideo - 是否有上一次生成的视频
+ * @returns 视频生成类型和置信度
+ */
+export async function analyzeVideoIntent(
+  userMessage: string,
+  hasLastImage: boolean,
+  hasLastVideo: boolean
+): Promise<{
+  type: 'text_to_video' | 'image_to_video' | 'video_extension' | 'reference_images' | 'interpolation'
+  confidence: number
+}> {
+  const lowerMessage = userMessage.toLowerCase()
+
+  // 视频延展检测（优先级最高）
+  if (hasLastVideo && (
+    lowerMessage.includes('延展') ||
+    lowerMessage.includes('延长') ||
+    lowerMessage.includes('继续') ||
+    lowerMessage.includes('extend') ||
+    lowerMessage.includes('更长')
+  )) {
+    console.log('[Gemini] 视频意图: video_extension')
+    return { type: 'video_extension', confidence: 0.95 }
+  }
+
+  // 图片转视频检测
+  if (hasLastImage && (
+    lowerMessage.includes('动起来') ||
+    lowerMessage.includes('转视频') ||
+    lowerMessage.includes('变成视频') ||
+    lowerMessage.includes('转成视频') ||
+    lowerMessage.includes('变动画') ||
+    lowerMessage.includes('animate') ||
+    lowerMessage.includes('让它动')
+  )) {
+    console.log('[Gemini] 视频意图: image_to_video')
+    return { type: 'image_to_video', confidence: 0.9 }
+  }
+
+  // 参考图片生成（需要多图输入）
+  if (lowerMessage.includes('参考') && (lowerMessage.includes('图') || lowerMessage.includes('image'))) {
+    console.log('[Gemini] 视频意图: reference_images')
+    return { type: 'reference_images', confidence: 0.85 }
+  }
+
+  // 帧插值（第一帧、最后一帧关键词）
+  if ((lowerMessage.includes('第一帧') || lowerMessage.includes('最后一帧')) ||
+      (lowerMessage.includes('first frame') || lowerMessage.includes('last frame')) ||
+      lowerMessage.includes('帧插值')) {
+    console.log('[Gemini] 视频意图: interpolation')
+    return { type: 'interpolation', confidence: 0.8 }
+  }
+
+  // 默认：文字生成视频
+  console.log('[Gemini] 视频意图: text_to_video (默认)')
+  return { type: 'text_to_video', confidence: 0.7 }
 }
 
 /**
@@ -344,10 +436,16 @@ async function generateImageWithReferencesLegacy(
  * @returns { text?: string, imageBase64?: string, interactionId?: string }
  */
 export async function generateImageWithReferences(
-  imageBuffers: ArrayBuffer[],
+  imageBuffers: (ArrayBuffer | string)[],  // ✅ CHANGED: Support URIs
   prompt: string,
   previousInteractionId?: string
-): Promise<{ text?: string; imageBase64?: string; interactionId?: string }> {
+): Promise<{
+  text?: string
+  imageBase64?: string
+  imageUri?: string        // ✅ NEW
+  imageFileName?: string   // ✅ NEW
+  interactionId?: string
+}> {
   console.log(`[Gemini] 多图生成 - 图片数: ${imageBuffers.length}, prompt: ${prompt.substring(0, 50)}...`)
 
   try {
@@ -365,7 +463,14 @@ export async function generateImageWithReferences(
   } catch (error) {
     // 降级：使用传统方法（无上下文记忆）
     console.warn('[Gemini] Interactions API 失败，降级到传统方法:', error)
-    const result = await generateImageWithReferencesLegacy(imageBuffers, prompt)
+
+    // 过滤出 ArrayBuffer（传统方法不支持 URI）
+    const arrayBuffers = imageBuffers.filter((img): img is ArrayBuffer => typeof img !== 'string')
+    if (arrayBuffers.length === 0) {
+      throw new Error('No valid image buffers for fallback (URIs are not supported in legacy mode)')
+    }
+
+    const result = await generateImageWithReferencesLegacy(arrayBuffers, prompt)
 
     return {
       text: result.text,
