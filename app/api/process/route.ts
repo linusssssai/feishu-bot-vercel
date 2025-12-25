@@ -711,13 +711,13 @@ async function handleVideoGeneration(
   console.log(`[Process] 视频意图: ${videoIntent.type}, 置信度: ${videoIntent.confidence}`)
 
   try {
-    let operationResult: { operationName: string; estimatedTime: string }
+    let operation: any  // Store the full operation object
 
     // 根据意图类型选择生成方式
     switch (videoIntent.type) {
       case 'text_to_video':
         console.log(`[Process] 文字生成视频: ${textContent}`)
-        operationResult = await generateVideoFromText(textContent)
+        operation = await generateVideoFromText(textContent)
         break
 
       case 'image_to_video':
@@ -726,7 +726,7 @@ async function handleVideoGeneration(
           return
         }
         console.log(`[Process] 图片转视频 - Image URI: ${conversationCtx.lastGeneratedImageUri}`)
-        operationResult = await generateVideoFromImage(
+        operation = await generateVideoFromImage(
           conversationCtx.lastGeneratedImageUri,
           textContent
         )
@@ -745,7 +745,7 @@ async function handleVideoGeneration(
         }
 
         console.log(`[Process] 延展视频 - Video URI: ${conversationCtx.lastGeneratedVideoUri}`)
-        operationResult = await extendVideo(
+        operation = await extendVideo(
           conversationCtx.lastGeneratedVideoUri,
           textContent
         )
@@ -762,29 +762,22 @@ async function handleVideoGeneration(
         return
 
       default:
-        operationResult = await generateVideoFromText(textContent)
+        operation = await generateVideoFromText(textContent)
     }
-
-    // TODO: 检查是否有正在进行的视频生成（暂时禁用，等待确认正确的API签名）
-    // const existingOperation = conversationCtx.lastVideoOperationName
-    // if (existingOperation && existingOperation !== operationResult.operationName) {
-    //   // 可以在这里检查是否有重复请求
-    // }
 
     // 立即返回状态消息
     await replyMessage(
       messageId,
-      `🎬 视频生成已启动！\n📊 预计耗时: ${operationResult.estimatedTime}\n⏳ 正在后台处理，完成后将自动发送...\n\n💡 提示: 生成期间你可以继续发送其他消息`
+      `🎬 视频生成已启动！\n📊 预计耗时: 30-180 秒\n⏳ 正在后台处理，完成后将自动发送...\n\n💡 提示: 生成期间你可以继续发送其他消息`
     )
 
-    // 保存Operation信息到会话状态
+    // 保存视频生成时间戳到会话状态
     await ConversationManager.updateContext(sessionId, {
-      lastVideoOperationName: operationResult.operationName,
       videoGenerationTimestamp: Date.now()
     })
 
     // ✅ 启动后台轮询任务（异步，不等待）
-    pollAndDeliverVideo(operationResult.operationName, messageId, sessionId).catch(error => {
+    pollAndDeliverVideo(operation, messageId, sessionId).catch(error => {
       console.error('[Process] 视频轮询失败:', error)
       replyMessage(messageId, `❌ 视频生成失败: ${String(error)}`).catch(console.error)
     })
@@ -800,16 +793,16 @@ async function handleVideoGeneration(
  * 在后台运行，不阻塞主请求
  */
 async function pollAndDeliverVideo(
-  operationName: string,
+  operation: any,  // GenerateVideosOperation object
   messageId: string,
   sessionId: string
 ): Promise<void> {
-  console.log(`[Process] 开始轮询视频生成: ${operationName}`)
+  console.log(`[Process] 开始轮询视频生成...`)
 
   try {
     // Step 1: 轮询直到完成（最多6分钟）
     const videoResult = await pollVideoOperation(
-      operationName,
+      operation,  // Pass operation object
       36,  // 36次 * 10秒 = 6分钟
       (attempt, total) => {
         // 可选：每100秒发送一次进度更新

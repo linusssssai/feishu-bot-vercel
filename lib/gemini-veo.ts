@@ -41,7 +41,7 @@ export function getVeoClient(): GoogleGenAI {
 export async function generateVideoFromText(
   prompt: string,
   config?: Partial<GenerateVideosConfig>
-): Promise<{ operationName: string; estimatedTime: string }> {
+): Promise<any> {  // Return full operation object
   const client = getVeoClient()
 
   const defaultConfig: GenerateVideosConfig = {
@@ -62,24 +62,14 @@ export async function generateVideoFromText(
       config: defaultConfig as any
     })
 
-    // 调试日志：查看返回的对象结构
-    console.log(`[Veo] API 返回对象:`, JSON.stringify(operation, null, 2))
+    console.log(`[Veo] Operation 创建成功，开始轮询...`)
 
     if (!operation) {
       throw new Error('generateVideos() 返回了 undefined')
     }
 
-    if (!operation.name) {
-      console.error('[Veo] Operation 对象缺少 name 属性:', operation)
-      throw new Error(`Operation name is missing. 返回的对象: ${JSON.stringify(operation)}`)
-    }
-
-    console.log(`[Veo] Operation 创建成功: ${operation.name}`)
-
-    return {
-      operationName: operation.name,
-      estimatedTime: '预计 30-180 秒'
-    }
+    // Return the entire operation object for polling
+    return operation
   } catch (error) {
     console.error('[Veo] 视频生成 API 调用失败:', error)
     throw error
@@ -96,7 +86,7 @@ export async function generateVideoFromImage(
   imageUri: string,
   prompt: string,
   config?: Partial<GenerateVideosConfig>
-): Promise<{ operationName: string; estimatedTime: string }> {
+): Promise<any> {  // Return full operation object
   const client = getVeoClient()
 
   console.log(`[Veo] 图片转视频 - Image: ${imageUri.substring(0, 50)}...`)
@@ -114,16 +104,9 @@ export async function generateVideoFromImage(
     } as any
   })
 
-  console.log(`[Veo] Operation 创建成功: ${operation.name}`)
+  console.log(`[Veo] Operation 创建成功，开始轮询...`)
 
-  if (!operation.name) {
-    throw new Error('Operation name is missing')
-  }
-
-  return {
-    operationName: operation.name,
-    estimatedTime: '预计 40-200 秒'
-  }
+  return operation
 }
 
 /**
@@ -134,7 +117,7 @@ export async function generateVideoFromImage(
 export async function extendVideo(
   videoUri: string,
   prompt: string
-): Promise<{ operationName: string; estimatedTime: string }> {
+): Promise<any> {  // Return full operation object
   const client = getVeoClient()
 
   console.log(`[Veo] 延展视频 - Video URI: ${videoUri}`)
@@ -149,16 +132,9 @@ export async function extendVideo(
     } as any
   })
 
-  console.log(`[Veo] Operation 创建成功: ${operation.name}`)
+  console.log(`[Veo] Operation 创建成功，开始轮询...`)
 
-  if (!operation.name) {
-    throw new Error('Operation name is missing')
-  }
-
-  return {
-    operationName: operation.name,
-    estimatedTime: '预计 50-240 秒'
-  }
+  return operation
 }
 
 /**
@@ -171,7 +147,7 @@ export async function generateVideoWithReferences(
   prompt: string,
   referenceImageUris: string[],
   config?: Partial<GenerateVideosConfig>
-): Promise<{ operationName: string; estimatedTime: string }> {
+): Promise<any> {  // Return full operation object
   const client = getVeoClient()
 
   if (referenceImageUris.length > 3) {
@@ -198,16 +174,9 @@ export async function generateVideoWithReferences(
     } as any
   })
 
-  console.log(`[Veo] Operation 创建成功: ${operation.name}`)
+  console.log(`[Veo] Operation 创建成功，开始轮询...`)
 
-  if (!operation.name) {
-    throw new Error('Operation name is missing')
-  }
-
-  return {
-    operationName: operation.name,
-    estimatedTime: '预计 60-300 秒'
-  }
+  return operation
 }
 
 /**
@@ -220,7 +189,7 @@ export async function generateVideoWithInterpolation(
   firstFrameUri: string,
   lastFrameUri: string,
   prompt: string
-): Promise<{ operationName: string; estimatedTime: string }> {
+): Promise<any> {  // Return full operation object
   const client = getVeoClient()
 
   console.log(`[Veo] 帧插值生成 - First: ${firstFrameUri}, Last: ${lastFrameUri}`)
@@ -236,27 +205,20 @@ export async function generateVideoWithInterpolation(
     } as any
   })
 
-  console.log(`[Veo] Operation 创建成功: ${operation.name}`)
+  console.log(`[Veo] Operation 创建成功，开始轮询...`)
 
-  if (!operation.name) {
-    throw new Error('Operation name is missing')
-  }
-
-  return {
-    operationName: operation.name,
-    estimatedTime: '预计 50-240 秒'
-  }
+  return operation
 }
 
 /**
  * 轮询Operation状态（核心函数）
- * @param operationName - Operation名称
+ * @param operation - Operation对象
  * @param maxAttempts - 最大轮询次数（默认36次 = 6分钟）
  * @param onProgress - 可选的进度回调
  * @returns 生成完成的视频URI和metadata
  */
 export async function pollVideoOperation(
-  operationName: string,
+  operation: any,  // GenerateVideosOperation
   maxAttempts: number = 36,
   onProgress?: (attempt: number, total: number) => void
 ): Promise<{
@@ -268,13 +230,13 @@ export async function pollVideoOperation(
   const client = getVeoClient()
 
   let attempts = 0
-  let operation = await client.operations.get(operationName as any)
 
-  console.log(`[Veo] 开始轮询 Operation: ${operationName}`)
+  console.log(`[Veo] 开始轮询 Operation...`)
 
   while (!operation.done && attempts < maxAttempts) {
     await new Promise(resolve => setTimeout(resolve, 10000)) // 10秒间隔
-    operation = await client.operations.get(operationName as any)
+    // Use getVideosOperation() with operation object
+    operation = await client.operations.getVideosOperation({ operation })
     attempts++
 
     console.log(`[Veo] 轮询第 ${attempts}/${maxAttempts} 次 - Status: ${operation.done ? 'Done' : 'Processing'}`)
