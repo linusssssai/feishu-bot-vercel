@@ -105,9 +105,9 @@ export async function POST(request: NextRequest) {
 
         await replyMessage(messageId, replyText)
       }
-      // 检查是否明确提到图片相关操作（优先级高于多维表格）
+      // 检查是否明确提到图片/视频相关操作（优先级高于多维表格）
       else if (isImageRelatedRequest(textContent)) {
-        console.log(`[Process] 检测到图片相关请求，分析意图...`)
+        console.log(`[Process] 检测到图片/视频相关请求，分析意图...`)
         const intent = await analyzeUserIntent(textContent)
         console.log(`[Process] 用户意图: ${intent}`)
 
@@ -154,7 +154,13 @@ export async function POST(request: NextRequest) {
             const imageResult = await generateImage(textContent, conversationCtx.lastInteractionId)
             await handleImageResult(messageId, sessionId, imageResult)
           }
-        } else {
+        }
+        // ✅ NEW: 添加视频生成处理
+        else if (intent === 'video_generation') {
+          console.log(`[Process] 检测到视频生成请求`)
+          await handleVideoGeneration(messageId, chatId || messageId, textContent)
+        }
+        else {
           // 普通文字回复（使用 Interactions API + 会话记忆）
           console.log(`[Process] 调用Gemini处理文本: ${textContent.substring(0, 50)}...`)
 
